@@ -50,11 +50,13 @@ jobs:
       - name: Vérifier
         run: |
           for A in "KSHPLAYER" "KSHPLAYER PRO"; do
-            lipo -info "macOS/build/Build/Products/Release/$A.app/Contents/MacOS/$A"
+            echo "::notice::$(lipo -info "macOS/build/Build/Products/Release/$A.app/Contents/MacOS/$A")"
           done
 
       - name: Fabriquer les .dmg
-        run: bash macOS/make-dmg.sh
+        run: |
+          bash macOS/make-dmg.sh
+          for f in macOS/dist/*.dmg; do echo "::notice::$(basename "$f") : $(du -h "$f" | cut -f1)"; done
 
       - uses: actions/upload-artifact@v5
         with:
@@ -66,3 +68,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: macOS/dist/*.dmg
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: KSHPLAYER ${{ github.ref_name }}
+          body: |
+            **KSHPLAYER pour Mac** (Apple Silicon + Intel, macOS 13 et plus).
+            - `KSHPLAYER.dmg` : la version pour tout le monde
+            - `KSHPLAYER-PRO.dmg` : l'édition monteurs
+            Première ouverture : clic droit sur l'appli > Ouvrir (voir le LISEZ-MOI dans le .dmg).
