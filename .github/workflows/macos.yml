@@ -19,29 +19,33 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Outils
         run: brew install xcodegen
 
       - name: Préparer le projet
         run: |
-          ./macOS/prepare.sh
-          cd macOS && xcodegen generate
+          bash macOS/prepare.sh
+          cd macOS && xcodegen generate 2>&1 | tee ../xcodegen.log || { sed 's/^/::error::/' ../xcodegen.log | tail -20; exit 1; }
 
       - name: Compiler KSHPLAYER
         run: |
           cd macOS
           xcodebuild -project KSHPLAYER.xcodeproj -scheme "KSHPLAYER" -configuration Release \
             -destination 'generic/platform=macOS' -derivedDataPath build \
-            -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build | tail -n 60
+            -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build > build.log 2>&1 \
+            || { grep -E "error:|fatal|Error" build.log | sort -u | head -40 | sed 's/^/::error::/'; tail -n 40 build.log; exit 1; }
+          tail -n 5 build.log
 
       - name: Compiler KSHPLAYER PRO
         run: |
           cd macOS
           xcodebuild -project KSHPLAYER.xcodeproj -scheme "KSHPLAYER PRO" -configuration Release \
             -destination 'generic/platform=macOS' -derivedDataPath build \
-            -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build | tail -n 60
+            -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build > build.log 2>&1 \
+            || { grep -E "error:|fatal|Error" build.log | sort -u | head -40 | sed 's/^/::error::/'; tail -n 40 build.log; exit 1; }
+          tail -n 5 build.log
 
       - name: Vérifier
         run: |
@@ -50,9 +54,9 @@ jobs:
           done
 
       - name: Fabriquer les .dmg
-        run: ./macOS/make-dmg.sh
+        run: bash macOS/make-dmg.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: KSHPLAYER-macOS
           path: macOS/dist/*.dmg
