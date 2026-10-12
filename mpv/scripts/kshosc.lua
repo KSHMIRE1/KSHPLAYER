@@ -148,11 +148,130 @@ local function open_menu(kind, anchor_x)
              title = kind == 'sub' and 'SOUS-TITRES' or 'AUDIO' }
 end
 
+-- ================= PRO : moteur LUT =================
+-- • 100 % sans comparaison : LUT appliquée par la carte graphique (option mpv « lut »), zéro perte de perf.
+-- • Intensité < 100 % ou avant/après : filtre FFmpeg (lut3d + blend) dont on règle le dosage / la séparation
+--   en direct (vf-command), décodage en mode « copie » le temps de la comparaison.
+local LUT = { file = nil, k = 1.0, split = false, pos = 0.5, with_capture = false, cpu = false, hwdec = nil }
+local LUT_DB = (opts.lutdir ~= '') and utils.join_path(opts.lutdir, '..' .. (MAC and '/' or '\\') .. 'luts-par-dossier.json') or nil
+local lut_db_cache = nil
+
+local function lut_name() return LUT.file and select(2, utils.split_path(LUT.file)):gsub('%.[Cc][Uu][Bb][Ee]$', '') or '' end
+
+local function lut_db()
+    if lut_db_cache then return lut_db_cache end
+    lut_db_cache = {}
+    if LUT_DB then
+        local f = io.open(LUT_DB, 'r')
+        if f then lut_db_cache = utils.parse_json(f:read('*a') or '') or {}; f:close() end
+    end
+    lut_db_cache.dirs = lut_db_cache.dirs or {}
+    return lut_db_cache
+end
+
+local function lut_db_save()
+    if not LUT_DB then return end
+    local f = io.open(LUT_DB, 'w')
+    if f then f:write(utils.format_json(lut_db()) or '{}'); f:close() end
+end
+
+local function video_dir() return (utils.split_path(mp.get_property('path', ''))) or '' end
+local function remembered() local e = lut_db().dirs[video_dir()]; return e and LUT.file and e.file == LUT.file end
+
+local function ff_path(p)   -- chemin pour un filtre FFmpeg : barres « / » et deux-points échappés
+    return (p:gsub('\\', '/'):gsub(':', '\\:'):gsub("'", ''))
+end
+
+local function blend_expr(pos, k)
+    return string.format('if(lt(X,W*%.4f),A,A+(B-A)*%.3f)', pos, k)
+end
+
+local function vf_remove() mp.commandv('vf', 'remove', '@ksh') end
+
+local function apply_lut()
+    if not LUT.file then
+        mp.set_property('lut', '')
+        if LUT.cpu then vf_remove(); mp.set_property('hwdec', LUT.hwdec or 'auto-safe'); LUT.cpu = false end
+        return
+    end
+    if LUT.k >= 0.999 and not LUT.split then
+        -- chemin rapide : carte graphique
+        if LUT.cpu then vf_remove(); mp.set_property('hwdec', LUT.hwdec or 'auto-safe'); LUT.cpu = false end
+        mp.set_property('lut', LUT.file)
+        return
+    end
+    -- chemin comparaison / dosage : filtre FFmpeg
+    mp.set_property('lut', '')
+    if not LUT.cpu then
+        LUT.hwdec = LUT.hwdec or mp.get_property('hwdec')
+        mp.set_property('hwdec', 'auto-copy-safe')
+    end
+    local g = string.format("split[ksha][kshb];[kshb]lut3d=file='%s'[kshc];[ksha][kshc]blend=all_expr='%s'",
+        ff_path(LUT.file), blend_expr(LUT.split and LUT.pos or 0, LUT.k))
+    vf_remove()
+    mp.commandv('vf', 'add', '@ksh:lavfi=graph=%' .. #g .. '%' .. g)
+    LUT.cpu = true
+end
+
+-- mise à jour en direct (glisser la séparation / l'intensité) sans reconstruire le filtre
+local last_live = 0
+local function lut_live(force)
+    if not LUT.cpu then apply_lut(); return end
+    local now = mp.get_time()
+    if not force and now - last_live < 0.05 then return end
+    last_live = now
+    local ok = mp.commandv('vf-command', 'ksh', 'all_expr', blend_expr(LUT.split and LUT.pos or 0, LUT.k), 'blend')
+    if not ok then apply_lut() end
+end
+
+local function set_lut(file, k)
+    LUT.file = file
+    if k then LUT.k = k end
+    if not file then LUT.split = false end
+    apply_lut()
+    mp.osd_message(file and ('LUT : ' .. lut_name()) or 'LUT désactivée')
+end
+
+local function toggle_split()
+    if not LUT.file then return end
+    LUT.split = not LUT.split
+    apply_lut()
+    mp.osd_message(LUT.split and 'Avant / après  ·  glisse la ligne' or 'Comparaison désactivée')
+end
+
+local function toggle_remember()
+    if not LUT.file then return end
+    local db, d = lut_db(), video_dir()
+    if remembered() then db.dirs[d] = nil; mp.osd_message('LUT oubliée pour ce dossier')
+    else db.dirs[d] = { file = LUT.file, k = LUT.k }; mp.osd_message('LUT mémorisée pour ce dossier') end
+    lut_db_save()
+end
+
+local function toggle_capture_lut()
+    LUT.with_capture = not LUT.with_capture
+    local db = lut_db(); db.capture_with_lut = LUT.with_capture; lut_db_save()
+    mp.osd_message(LUT.with_capture and 'Captures AVEC la LUT' or 'Captures SANS la LUT (image brute)')
+end
+
+-- au chargement d'un fichier : LUT mémorisée pour son dossier
+mp.register_event('file-loaded', function()
+    if not PRO then return end
+    LUT.with_capture = lut_db().capture_with_lut == true
+    local e = lut_db().dirs[video_dir()]
+    if e and e.file and utils.file_info(e.file) then
+        LUT.file, LUT.k, LUT.split = e.file, tonumber(e.k) or 1, false
+        apply_lut()
+        mp.osd_message('LUT du dossier : ' .. lut_name(), 2.5)
+    elseif LUT.file then
+        apply_lut()
+    end
+end)
+
 -- PRO : menu des LUT (.cube du dossier LUT + du dossier de la vidéo)
 local function open_lut_menu(anchor_x)
-    local current = mp.get_property('lut', '')
+    local current = LUT.file or ''
     local items = { { label = 'Aucune LUT', selected = current == '',
-                      act = function() mp.set_property('lut', ''); mp.osd_message('LUT désactivée') end } }
+                      act = function() set_lut(nil) end } }
     local dirs = {}
     if opts.lutdir ~= '' then dirs[#dirs + 1] = opts.lutdir end
     local path = mp.get_property('path', '')
@@ -165,10 +284,7 @@ local function open_lut_menu(anchor_x)
                 seen[f] = true
                 local full = utils.join_path(d, f)
                 items[#items + 1] = { label = f:gsub('%.[Cc][Uu][Bb][Ee]$', ''), selected = current == full,
-                    act = function()
-                        mp.set_property('lut', full)
-                        mp.osd_message('LUT : ' .. f)
-                    end }
+                    act = function() set_lut(full) end }
             end
         end
     end
@@ -184,8 +300,33 @@ end
 
 -- ---------- Outils PRO ----------
 function capture()
-    mp.commandv('screenshot', 'video')
-    mp.osd_message('Image enregistrée (PNG) dans ' .. (MAC and 'Images/KSHPLAYER PRO' or 'Images\\KSHPLAYER PRO'), 2)
+    local where = MAC and 'Images/KSHPLAYER PRO' or 'Images\\KSHPLAYER PRO'
+    if not (PRO and LUT.with_capture and LUT.file) then
+        mp.commandv('screenshot', 'video')
+        mp.osd_message('Image enregistrée (PNG) dans ' .. where, 2)
+        return
+    end
+    -- capture AVEC la LUT : on applique la LUT (sans séparation) au filtre, on capture, on remet l'état
+    local was_split = LUT.split
+    LUT.split = false
+    local was_cpu = LUT.cpu
+    LUT.cpu = false; LUT.hwdec = LUT.hwdec or mp.get_property('hwdec')
+    mp.set_property('lut', '')
+    mp.set_property('hwdec', 'auto-copy-safe')
+    local g = string.format("lut3d=file='%s'", ff_path(LUT.file))
+    if LUT.k < 0.999 then
+        g = string.format("split[ksha][kshb];[kshb]lut3d=file='%s'[kshc];[ksha][kshc]blend=all_expr='%s'", ff_path(LUT.file), blend_expr(0, LUT.k))
+    end
+    vf_remove()
+    mp.commandv('vf', 'add', '@ksh:lavfi=graph=%' .. #g .. '%' .. g)
+    mp.add_timeout(0.6, function()
+        mp.commandv('screenshot', 'video')
+        LUT.split = was_split
+        LUT.cpu = true
+        if not was_cpu and not was_split and LUT.k >= 0.999 then LUT.cpu = true end
+        apply_lut()
+        mp.osd_message('Image enregistrée AVEC la LUT (PNG) dans ' .. where, 2)
+    end)
 end
 
 function cycle_guides()
@@ -355,6 +496,24 @@ local function render()
     local s = math.max(0.75, math.min(1.7, H / 900))
     local fb, ft = fade.bottom, fade.top
 
+    if PRO and LUT.split and LUT.file then
+        local d = mp.get_property_native('osd-dimensions') or {}
+        local vx, vy = d.ml or 0, d.mt or 0
+        local vw, vh = W - (d.ml or 0) - (d.mr or 0), H - (d.mt or 0) - (d.mb or 0)
+        if vw > 0 and vh > 0 then
+            local lx = vx + vw * LUT.pos
+            local hov = dragging == 'split' or math.abs(mouse.x - lx) < 14 * s
+            ass[#ass + 1] = rrect(lx - 1 * s, vy, 2 * s, vh, 0, WHITE, hov and 1 or 0.85, 1)
+            ass[#ass + 1] = rrect(lx - 16 * s, vy + vh / 2 - 16 * s, 32 * s, 32 * s, 16 * s, hov and ACCENT or PANEL, 0.95, 1)
+            ass[#ass + 1] = icon(lx, vy + vh / 2, 'unfold_more', 18 * s, WHITE, 1, 1)
+            ass[#ass + 1] = rrect(lx - 92 * s, vy + 14 * s, 80 * s, 26 * s, 13 * s, PANEL, 0.8, 1)
+            ass[#ass + 1] = text(lx - 52 * s, vy + 27 * s, 5, 'AVANT', 11 * s, WHITE, 0.9, 1)
+            ass[#ass + 1] = rrect(lx + 12 * s, vy + 14 * s, 80 * s, 26 * s, 13 * s, ACCENT, 0.9, 1)
+            ass[#ass + 1] = text(lx + 52 * s, vy + 27 * s, 5, 'APRÈS', 11 * s, WHITE, 1, 1)
+            regions[#regions + 1] = { x1 = lx - 16 * s, y1 = vy, x2 = lx + 16 * s, y2 = vy + vh, id = 'split',
+                                      vx = vx, vw = vw }
+        end
+    end
     if PRO and guide_mode > 0 then render_guides(ass, s) end
     if PRO and info_on then render_info(ass, s) end
     if PRO and guide_mode == 0 and mp.get_time() < guide_flash then render_guides(ass, s) end
@@ -492,6 +651,44 @@ local function render()
         end
         regions[#regions + 1] = bar
 
+        -- PRO : panneau de la LUT active (intensité, avant/après, mémoire, captures)
+        if PRO and LUT.file and not menu then
+            local lh = 48 * s
+            local lw = math.min(620 * s, pw)
+            local lx, ly = px, py - lh - 10 * s
+            ass[#ass + 1] = rrect(lx - 1 * s, ly - 1 * s, lw + 2 * s, lh + 2 * s, 24 * s, BORDER, 0.9, fb)
+            ass[#ass + 1] = rrect(lx, ly, lw, lh, 23 * s, PANEL, 0.88, fb)
+            local cy = ly + lh / 2
+            ass[#ass + 1] = icon(lx + 26 * s, cy, 'gradient', 20 * s, ACCENT, 1, fb)
+            local name = lut_name()
+            if #name > 16 then name = name:sub(1, 15) .. '…' end
+            ass[#ass + 1] = text(lx + 46 * s, cy, 4, name, 13 * s, WHITE, 0.95, fb)
+            -- intensité
+            local kx1, kx2 = lx + 190 * s, lx + 310 * s
+            ass[#ass + 1] = rrect(kx1, cy - 2 * s, kx2 - kx1, 4 * s, 2 * s, WHITE, 0.22, fb)
+            ass[#ass + 1] = rrect(kx1, cy - 2 * s, (kx2 - kx1) * LUT.k, 4 * s, 2 * s, ACCENT, 1, fb)
+            local khov = dragging == 'lutk' or (mouse.x >= kx1 - 8 * s and mouse.x <= kx2 + 8 * s and math.abs(mouse.y - cy) <= 14 * s)
+            local kk = (khov and 8 or 6) * s
+            ass[#ass + 1] = rrect(kx1 + (kx2 - kx1) * LUT.k - kk, cy - kk, kk * 2, kk * 2, kk, WHITE, 1, fb)
+            ass[#ass + 1] = text(kx2 + 12 * s, cy, 4, string.format('%d %%', math.floor(LUT.k * 100 + 0.5)), 12 * s, WHITE, 0.8, fb)
+            regions[#regions + 1] = { x1 = kx1 - 8 * s, y1 = cy - 14 * s, x2 = kx2 + 8 * s, y2 = cy + 14 * s, id = 'lutk',
+                                      kx1 = kx1, kx2 = kx2, wheel = function(dir)
+                                          LUT.k = math.max(0, math.min(1, LUT.k + dir * 0.05)); lut_live(true) end }
+            -- boutons
+            local function lbtn(x, name, id, fn, on)
+                local r = { x1 = x - 17 * s, y1 = cy - 17 * s, x2 = x + 17 * s, y2 = cy + 17 * s, id = id, click = fn }
+                if inside(r, mouse.x, mouse.y) then ass[#ass + 1] = rrect(r.x1, r.y1, 34 * s, 34 * s, 17 * s, WHITE, 0.12, fb) end
+                ass[#ass + 1] = icon(x, cy, name, 20 * s, on and ACCENT or WHITE, 1, fb)
+                regions[#regions + 1] = r
+            end
+            local bx = lx + lw - 26 * s
+            lbtn(bx, 'close', 'lutoff', function() set_lut(nil) end)
+            lbtn(bx - 40 * s, 'photo_filter', 'lutcap', toggle_capture_lut, LUT.with_capture)
+            lbtn(bx - 80 * s, remembered() and 'bookmark' or 'bookmark_border', 'lutmem', toggle_remember, remembered())
+            lbtn(bx - 120 * s, 'compare', 'lutsplit', toggle_split, LUT.split)
+            regions[#regions + 1] = { x1 = lx, y1 = ly, x2 = lx + lw, y2 = ly + lh, id = 'lutbg' }
+        end
+
         -- Menu des pistes (carte KSHFLIX)
         if menu then
             local ih = 38 * s
@@ -609,6 +806,26 @@ local function volume_to_mouse()
     end
 end
 
+local function split_to_mouse()
+    for _, r in ipairs(regions) do
+        if r.id == 'split' then
+            LUT.pos = math.max(0.02, math.min(0.98, (mouse.x - r.vx) / r.vw))
+            lut_live(false)
+            return
+        end
+    end
+end
+
+local function lutk_to_mouse(final)
+    for _, r in ipairs(regions) do
+        if r.id == 'lutk' then
+            LUT.k = math.max(0, math.min(1, (mouse.x - r.kx1) / (r.kx2 - r.kx1)))
+            if final then apply_lut() else lut_live(false) end
+            return
+        end
+    end
+end
+
 local function on_click(e)
     if e.event == 'down' then
         local r = region_at(mouse.x, mouse.y)
@@ -623,11 +840,19 @@ local function on_click(e)
         elseif r.id == 'volbar' then
             dragging = 'vol'
             volume_to_mouse()
+        elseif r.id == 'split' then
+            dragging = 'split'
+            split_to_mouse()
+        elseif r.id == 'lutk' then
+            dragging = 'lutk'
+            lutk_to_mouse(false)
         elseif r.click then
             r.click()
         end
     elseif e.event == 'up' then
         if dragging == 'bar' then seek_to_mouse(true) end
+        if dragging == 'split' then lut_live(true) end
+        if dragging == 'lutk' then lutk_to_mouse(true) end
         dragging = false
     end
 end
@@ -674,7 +899,9 @@ mp.observe_property('mouse-pos', 'native', function(_, m)
     mouse.x, mouse.y, mouse.hover = m.x, m.y, m.hover
     if moved then last_move = mp.get_time() end
     if dragging == 'bar' then seek_to_mouse(false)
-    elseif dragging == 'vol' then volume_to_mouse() end
+    elseif dragging == 'vol' then volume_to_mouse()
+    elseif dragging == 'split' then split_to_mouse()
+    elseif dragging == 'lutk' then lutk_to_mouse(false) end
 end)
 
 mp.observe_property('osd-dimensions', 'native', function(_, d)
@@ -713,7 +940,7 @@ mp.add_periodic_timer(1 / 30, function()
     fade.top = step(fade.top, want_top)
     if fade.bottom == 0 then menu = nil end
 
-    local persistent = PRO and (info_on or guide_mode > 0 or now < guide_flash)
+    local persistent = PRO and (info_on or guide_mode > 0 or now < guide_flash or (LUT.split and LUT.file ~= nil))
     if fade.bottom > 0 or fade.top > 0 or persistent then
         render()
         local captured = region_at(mouse.x, mouse.y) ~= nil or dragging or menu ~= nil
@@ -748,6 +975,8 @@ if PRO then
     k('g', 'ksh_guides', cycle_guides)
     k('s', 'ksh_shot', capture)
     k('t', 'ksh_lut', function() open_lut_menu(W / 2); flash_until = mp.get_time() + 3 end)
+    k('Shift+t', 'ksh_lut_split', toggle_split)
+    k('Alt+t', 'ksh_lut_off', function() set_lut(nil) end)
     if opts.shotdir ~= '' then mp.set_property('screenshot-directory', opts.shotdir) end
     mp.set_property('screenshot-format', 'png')
     mp.set_property('screenshot-template', '%F - %wH-%wM-%wS-%wT')
