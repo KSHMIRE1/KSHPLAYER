@@ -1,0 +1,64 @@
+# Compile KSHPLAYER et KSHPLAYER PRO pour Mac (Apple Silicon + Intel) et fabrique les .dmg.
+# Se lance à chaque envoi sur « main », ou à la main (onglet Actions > macOS > Run workflow).
+# Les .dmg se téléchargent en bas de la page du « run » (section Artifacts).
+# Un tag « v1.0.0 » publie en plus une Release GitHub avec les .dmg.
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["macOS/**", "mpv/**", ".github/workflows/macos.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Outils
+        run: brew install xcodegen
+
+      - name: Préparer le projet
+        run: |
+          ./macOS/prepare.sh
+          cd macOS && xcodegen generate
+
+      - name: Compiler KSHPLAYER
+        run: |
+          cd macOS
+          xcodebuild -project KSHPLAYER.xcodeproj -scheme "KSHPLAYER" -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
+            -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build | tail -n 60
+
+      - name: Compiler KSHPLAYER PRO
+        run: |
+          cd macOS
+          xcodebuild -project KSHPLAYER.xcodeproj -scheme "KSHPLAYER PRO" -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
+            -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build | tail -n 60
+
+      - name: Vérifier
+        run: |
+          for A in "KSHPLAYER" "KSHPLAYER PRO"; do
+            lipo -info "macOS/build/Build/Products/Release/$A.app/Contents/MacOS/$A"
+          done
+
+      - name: Fabriquer les .dmg
+        run: ./macOS/make-dmg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KSHPLAYER-macOS
+          path: macOS/dist/*.dmg
+
+      - name: Publier (tag uniquement)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: macOS/dist/*.dmg

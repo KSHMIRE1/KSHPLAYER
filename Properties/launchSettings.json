@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "KSHPLAYER": {
+      "commandName": "Project"
+    },
+    "KSHPLAYER (test vidéo)": {
+      "commandName": "Project",
+      "commandLineArgs": "\"C:\\Users\\KSHMIRE\\Videos\\2025-05-31 17-27-31.mkv\""
+    }
+  }
+}

@@ -1,0 +1,23 @@
+KSHPLAYER pour Mac
+==================
+
+1. Glisse l'appli dans le dossier « Applications » (à droite dans cette fenêtre).
+
+2. Première ouverture : comme l'appli n'est pas encore validée par Apple,
+   macOS affiche « impossible de vérifier le développeur ».
+   → Fais un clic droit (ou Ctrl+clic) sur l'appli > Ouvrir > Ouvrir.
+   → Sur macOS 15 et plus : Réglages Système > Confidentialité et sécurité,
+     tout en bas, « Ouvrir quand même ».
+   Ensuite, elle s'ouvre normalement.
+
+Ce que fait KSHPLAYER
+---------------------
+• Lit absolument tout : MKV, MP4, AVI, MOV, TS… en H.264, HEVC, AV1, VVC, VP9…
+• 4K HDR et Dolby Vision, sur les écrans HDR/XDR des Mac.
+• Réglé selon ton Mac : Apple Silicon ou Intel, mode adapté automatiquement.
+• Son Dolby / DTS, sous-titres SRT, ASS, PGS… pistes au choix en un clic.
+• Que la vidéo à l'écran, barre de contrôle KSHFLIX au survol du bas.
+
+Édition PRO (monteurs) : timecode, image par image, J-K-L, entrée/sortie,
+LUT .cube, infos techniques, repères de cadrage, captures PNG,
+séquences EXR / DPX / TIFF, ProRes, DNxHR, MXF.

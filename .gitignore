@@ -1,0 +1,15 @@
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+*.user
+# moteur Windows extrait automatiquement à la compilation
+engine/
+libmpv-2.dll
+# Mac
+macOS/build/
+macOS/dist/
+macOS/Generated/
+macOS/*.xcodeproj/
+macOS/Resources/mpv/
+.DS_Store

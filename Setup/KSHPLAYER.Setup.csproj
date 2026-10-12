@@ -1,0 +1,158 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Installateur KSHPLAYER / KSHPLAYER PRO.
+    .NET Framework 4.8 = présent d'office sur Windows 10/11 : le Setup.exe est un fichier unique, sans rien à installer avant.
+    À la compilation, ce projet publie le lecteur (.NET + WinAppSDK + moteur embarqués), le zippe et l'intègre dans l'exe.
+      Release     -> KSHPLAYER-Setup.exe
+      ReleasePro  -> KSHPLAYER-PRO-Setup.exe
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Configurations>Debug;Release;DebugPro;ReleasePro</Configurations>
+    <RootNamespace>KSHPLAYER.Setup</RootNamespace>
+    <ApplicationIcon>..\Assets\KSHPLAYER.ico</ApplicationIcon>
+    <ApplicationManifest>setup.manifest</ApplicationManifest>
+    <AssemblyName>KSHPLAYER-Setup</AssemblyName>
+    <KshAppConfig>Release</KshAppConfig>
+    <AppExe>KSHPLAYER.exe</AppExe>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'DebugPro' Or '$(Configuration)' == 'ReleasePro'">
+    <DefineConstants>$(DefineConstants);KSHPRO</DefineConstants>
+    <AssemblyName>KSHPLAYER-PRO-Setup</AssemblyName>
+    <KshAppConfig>ReleasePro</KshAppConfig>
+    <AppExe>KSHPLAYERPRO.exe</AppExe>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <EmbeddedResource Include="..\Assets\logo-mark.png" LogicalName="logo.png" />
+  </ItemGroup>
+
+  <!-- 1) publie le lecteur, 2) le zippe, 3) l'intègre dans l'installateur -->
+  <PropertyGroup>
+    <PayloadDir>$(MSBuildProjectDirectory)\obj\payload\$(KshAppConfig)\app\</PayloadDir>
+    <PayloadPak>$(MSBuildProjectDirectory)\obj\payload\$(KshAppConfig)\payload.kpk</PayloadPak>
+  </PropertyGroup>
+
+  <Target Name="BuildPayload" BeforeTargets="BeforeBuild">
+    <Message Importance="high" Text="KSHPLAYER : publication du lecteur ($(KshAppConfig))…" />
+    <RemoveDir Directories="$(PayloadDir)" />
+    <MSBuild Projects="..\KSHPLAYER.csproj" Targets="Restore"
+             Properties="Configuration=$(KshAppConfig);Platform=x64;RuntimeIdentifier=win-x64;SelfContained=true;_KshRestore=1" />
+    <MSBuild Projects="..\KSHPLAYER.csproj" Targets="Publish"
+             Properties="Configuration=$(KshAppConfig);Platform=x64;RuntimeIdentifier=win-x64;SelfContained=true;PublishDir=$(PayloadDir)" />
+    <Error Condition="!Exists('$(PayloadDir)$(AppExe)')" Text="La publication du lecteur a échoué ($(AppExe) introuvable)." />
+    <!-- Modules Microsoft inutiles pour un lecteur vidéo (IA, ML, widgets, langues d'interface non utilisées) -->
+    <ItemGroup>
+      <KshTrim Include="$(PayloadDir)onnxruntime*.dll;$(PayloadDir)DirectML.dll;$(PayloadDir)Microsoft.ML.*.dll" />
+      <KshTrim Include="$(PayloadDir)Microsoft.Windows.AI.*;$(PayloadDir)Microsoft.Windows.Widgets.*;$(PayloadDir)Microsoft.Windows.Workloads*" />
+      <KshTrim Include="$(PayloadDir)Microsoft.Windows.Private.Workloads.*;$(PayloadDir)Microsoft.Windows.SemanticSearch.winmd" />
+      <KshTrim Include="$(PayloadDir)Microsoft.Windows.Vision.winmd;$(PayloadDir)Microsoft.Windows.VisionInternal.winmd;$(PayloadDir)Microsoft.Windows.Internal.Vision.winmd" />
+      <KshTrim Include="$(PayloadDir)workloads*.json;$(PayloadDir)NpuDetect\**;$(PayloadDir)*.pdb;$(PayloadDir)createdump.exe" />
+      <KshLang Include="$([System.IO.Directory]::GetDirectories('$(PayloadDir)'))" />
+      <KshLangDrop Include="@(KshLang)" Condition="'%(Filename)%(Extension)' != 'fr-FR' And '%(Filename)%(Extension)' != 'fr-CA' And '%(Filename)%(Extension)' != 'en-us' And '%(Filename)%(Extension)' != 'en-GB' And '%(Filename)%(Extension)' != 'Assets' And '%(Filename)%(Extension)' != 'mpv' And '%(Filename)%(Extension)' != 'Microsoft.UI.Xaml' And '%(Filename)%(Extension)' != 'NpuDetect'" />
+    </ItemGroup>
+    <Delete Files="@(KshTrim)" />
+    <RemoveDir Directories="$(PayloadDir)NpuDetect;@(KshLangDrop)" />
+    <KshPack SourceDir="$(PayloadDir)" OutputFile="$(PayloadPak)" />
+    <ItemGroup>
+      <EmbeddedResource Include="$(PayloadPak)" LogicalName="payload.kpk" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    KshPack : compresse chaque fichier du lecteur avec LZMS, l'algorithme de compression intégré à Windows
+    (celui des images d'installation de Windows). Rien à installer, et l'installateur décompresse avec le même moteur.
+    Format : "KSHPAK1" | nb fichiers | (chemin, taille, mode, taille compressée, données)…
+  -->
+  <UsingTask TaskName="KshPack" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <SourceDir ParameterType="System.String" Required="true" />
+      <OutputFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public class KshPack : Task
+{
+    [Required] public string SourceDir { get; set; }
+    [Required] public string OutputFile { get; set; }
+
+    [DllImport("cabinet.dll", SetLastError = true)]
+    static extern bool CreateCompressor(uint algorithm, IntPtr alloc, out IntPtr handle);
+    [DllImport("cabinet.dll", SetLastError = true)]
+    static extern bool Compress(IntPtr h, byte[] src, UIntPtr srcSize, byte[] dst, UIntPtr dstSize, out UIntPtr outSize);
+    [DllImport("cabinet.dll")]
+    static extern bool CloseCompressor(IntPtr h);
+    [DllImport("cabinet.dll", SetLastError = true)]
+    static extern bool SetCompressorInformation(IntPtr h, int infoClass, ref int value, UIntPtr size);
+    const uint LZMS = 5;
+    const int BLOCK_SIZE = 1;
+
+    public override bool Execute()
+    {
+        var root = Path.GetFullPath(SourceDir).TrimEnd('\\') + "\\";
+        var files = Directory.GetFiles(root, "*", SearchOption.AllDirectories).OrderBy(f => f).ToArray();
+        long inTotal = 0, outTotal = 0;
+        IntPtr h;
+        if (!CreateCompressor(LZMS, IntPtr.Zero, out h)) { Log.LogError("LZMS indisponible"); return false; }
+        // blocs les plus grands possibles = meilleure compression (le moteur LZMS accepte jusqu'à 64 Mo selon les versions)
+        foreach (var mb in new[] { 64, 32, 16, 8, 4 })
+        {
+            int bs = mb * 1024 * 1024;
+            if (SetCompressorInformation(h, BLOCK_SIZE, ref bs, (UIntPtr)4)) { Log.LogMessage(MessageImportance.High, "KSHPLAYER : blocs LZMS de {0} Mo", mb); break; }
+        }
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(OutputFile));
+            using (var w = new BinaryWriter(File.Create(OutputFile)))
+            {
+                w.Write("KSHPAK1");
+                w.Write(files.Length);
+                foreach (var f in files)
+                {
+                    var data = File.ReadAllBytes(f);
+                    byte[] packed = null;
+                    UIntPtr size = UIntPtr.Zero;
+                    if (data.Length > 0)
+                    {
+                        Compress(h, data, (UIntPtr)data.Length, null, UIntPtr.Zero, out size);
+                        var buf = new byte[(long)size.ToUInt64()];
+                        if (Compress(h, data, (UIntPtr)data.Length, buf, (UIntPtr)buf.Length, out size) && (long)size.ToUInt64() < data.Length)
+                        {
+                            packed = new byte[(long)size.ToUInt64()];
+                            Buffer.BlockCopy(buf, 0, packed, 0, packed.Length);
+                        }
+                    }
+                    w.Write(f.Substring(root.Length).Replace('\\', '/'));
+                    w.Write((long)data.Length);
+                    w.Write(packed != null ? (byte)1 : (byte)0);
+                    var payload = packed ?? data;
+                    w.Write((long)payload.Length);
+                    w.Write(payload);
+                    inTotal += data.Length; outTotal += payload.Length;
+                }
+            }
+        }
+        finally { CloseCompressor(h); }
+        Log.LogMessage(MessageImportance.High, "KSHPLAYER : {0} fichiers, {1:F1} Mo -> {2:F1} Mo (LZMS)", files.Length, inTotal / 1048576.0, outTotal / 1048576.0);
+        return true;
+    }
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+</Project>

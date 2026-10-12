@@ -1,0 +1,79 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>KSHPLAYER</RootNamespace>
+    <AssemblyName>KSHPLAYER</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\KSHPLAYER.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <Configurations>Debug;Release;DebugPro;ReleasePro</Configurations>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <SatelliteResourceLanguages>fr;en</SatelliteResourceLanguages>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+  </PropertyGroup>
+
+  <!-- Édition PRO (monteurs) : configurations DebugPro / ReleasePro -->
+  <PropertyGroup Condition="'$(Configuration)' == 'DebugPro' Or '$(Configuration)' == 'ReleasePro'">
+    <DefineConstants>$(DefineConstants);KSHPRO</DefineConstants>
+    <AssemblyName>KSHPLAYERPRO</AssemblyName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'DebugPro'">
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>portable</DebugType>
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+
+  <!-- Release : .NET embarqué, l'appli tourne sur n'importe quel PC Windows 64 bits sans rien installer -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'ReleasePro'">
+    <SelfContained>true</SelfContained>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <!-- Moteur libmpv (build x86_64 standard, compatible tous processeurs) : extrait une fois depuis l'archive -->
+  <PropertyGroup>
+    <MpvArchive>$(USERPROFILE)\Downloads\mpv-dev-x86_64-20261012-git-88eb9f2e73.7z</MpvArchive>
+    <MpvEngineDir>$(MSBuildProjectDirectory)\engine</MpvEngineDir>
+  </PropertyGroup>
+
+  <Target Name="ExtractLibMpv" BeforeTargets="BeforeBuild" Condition="!Exists('$(MpvEngineDir)\libmpv-2.dll')">
+    <Error Condition="!Exists('$(MpvArchive)')" Text="Moteur libmpv manquant et archive introuvable : $(MpvArchive)" />
+    <MakeDir Directories="$(MpvEngineDir)" />
+    <Exec Command="&quot;$(SystemRoot)\System32\tar.exe&quot; -xf &quot;$(MpvArchive)&quot; -C &quot;$(MpvEngineDir)&quot; libmpv-2.dll" />
+    <ItemGroup>
+      <None Include="engine\libmpv-2.dll" Link="libmpv-2.dll" CopyToOutputDirectory="Always" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <None Update="engine\libmpv-2.dll" Link="libmpv-2.dll" CopyToOutputDirectory="Always" />
+    <!-- Barre de contrôle KSHPLAYER, police d'icônes (Material Icons, Apache 2.0) et raccourcis -->
+    <None Update="mpv\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="mpv\scripts\uosc\**\*;mpv\script-opts\**\*;mpv\fonts\uosc_textures.ttf" CopyToOutputDirectory="Never" />
+    <None Remove="libmpv-2.dll" />
+    <!-- le projet d'installateur vit dans Setup\ : on l'exclut du lecteur -->
+    <Compile Remove="Setup\**" />
+    <None Remove="macOS\**" />
+    <None Remove="Setup\**" />
+    <EmbeddedResource Remove="Setup\**" />
+    <!-- Identité KSHFLIX : logo, icône, police Unbounded (OFL) -->
+    <None Remove="Assets\**" />
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Kit Windows App SDK sans les modules IA / ML / Widgets (≈ 50 Mo inutiles pour un lecteur vidéo) -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="1.8.260803002" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" Version="1.8.25122902" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="1.8.260921001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.*" />
+  </ItemGroup>
+</Project>

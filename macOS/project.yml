@@ -1,0 +1,100 @@
+# Projet Xcode de KSHPLAYER pour Mac, généré par XcodeGen (« xcodegen generate »).
+# Deux cibles, même code : KSHPLAYER et KSHPLAYER PRO (drapeau KSHPRO).
+name: KSHPLAYER
+options:
+  bundleIdPrefix: com.kshmire
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit
+    exactVersion: 1.1.0-n9.0.2
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ONLY_ACTIVE_ARCH: NO
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    ENABLE_HARDENED_RUNTIME: NO
+    DEAD_CODE_STRIPPING: YES
+    GENERATE_INFOPLIST_FILE: NO
+
+targetTemplates:
+  Player:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources/logo-mark.png
+        buildPhase: resources
+      - path: Resources/Unbounded.ttf
+        buildPhase: resources
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
+      - path: Resources/mpv
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: MPVKit
+        product: MPVKit-GPL
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    info:
+      path: Generated/${target_name}-Info.plist
+      properties:
+        CFBundleDisplayName: ${PRODUCT_NAME}
+        CFBundleName: ${PRODUCT_NAME}
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleIconFile: AppIcon
+        LSApplicationCategoryType: public.app-category.entertainment
+        LSMinimumSystemVersion: "13.0"
+        NSHighResolutionCapable: true
+        NSHumanReadableCopyright: "KSHMIRE · moteur mpv / FFmpeg (GPL)"
+        NSPrincipalClass: NSApplication
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Vidéo
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.movie, public.video, public.mpeg-4, com.apple.quicktime-movie, public.avi, org.matroska.mkv, org.webmproject.webm, public.mpeg-2-transport-stream, com.microsoft.windows-media-wmv]
+          - CFBundleTypeName: Audio
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.audio]
+          - CFBundleTypeName: Dossier (séquence d'images)
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.folder]
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.matroska.mkv
+            UTTypeDescription: Vidéo Matroska
+            UTTypeConformsTo: [public.movie]
+            UTTypeTagSpecification:
+              public.filename-extension: [mkv, mk3d]
+          - UTTypeIdentifier: org.webmproject.webm
+            UTTypeDescription: Vidéo WebM
+            UTTypeConformsTo: [public.movie]
+            UTTypeTagSpecification:
+              public.filename-extension: [webm]
+
+targets:
+  KSHPLAYER:
+    templates: [Player]
+    settings:
+      base:
+        PRODUCT_NAME: KSHPLAYER
+        PRODUCT_BUNDLE_IDENTIFIER: com.kshmire.kshplayer
+
+  KSHPLAYER PRO:
+    templates: [Player]
+    settings:
+      base:
+        PRODUCT_NAME: KSHPLAYER PRO
+        PRODUCT_BUNDLE_IDENTIFIER: com.kshmire.kshplayer.pro
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) KSHPRO
