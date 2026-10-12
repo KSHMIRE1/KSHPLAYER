@@ -9,6 +9,8 @@ on:
     branches: [main]
     tags: ["v*"]
     paths: ["macOS/**", "mpv/**", ".github/workflows/macos.yml"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -64,10 +66,11 @@ jobs:
           path: macOS/dist/*.dmg
 
       - name: Publier (tag uniquement)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: macOS/dist/*.dmg
+          tag_name: ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           name: KSHPLAYER ${{ github.ref_name }}
           body: |
