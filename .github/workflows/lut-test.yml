@@ -1,0 +1,46 @@
+name: Test LUT GPU
+on:
+  push:
+    branches: [lut-test]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Outils
+        run: sudo apt-get update -q && sudo apt-get install -y -q mpv lua5.1 luajit mesa-vulkan-drivers xvfb ffmpeg python3-pil python3-numpy
+      - name: Syntaxe du script
+        run: luac5.1 -p mpv/scripts/kshosc.lua && echo OK
+      - name: Générer LUT de test + shader
+        run: |
+          mkdir -p t
+          python3 - <<'EOF'
+          n = 33
+          with open("t/swap.cube", "w") as f:
+              f.write('TITLE "swap"\nLUT_3D_SIZE 33\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n')
+              for b in range(n):
+                  for g in range(n):
+                      for r in range(n):
+                          f.write(f"{b/(n-1):.6f} {g/(n-1):.6f} {r/(n-1):.6f}\n")
+          EOF
+          luajit .github/lut-test/gen.lua mpv/scripts/kshosc.lua t/swap.cube "$PWD/t"
+          head -c 1200 t/kshplayer-lut-1-1.glsl; echo; wc -c t/kshplayer-lut-1-1.glsl
+      - name: Lecture mpv gpu-next + captures
+        run: |
+          ffmpeg -v error -f lavfi -i "testsrc2=s=640x360:r=25,format=yuv420p" -t 4 t/v.mp4
+          mpv --version | head -2
+          xvfb-run -s "-screen 0 1280x720x24" mpv --no-config --vo=gpu-next --gpu-api=vulkan --hwdec=no \
+            --pause --geometry=640x360 --no-border --osc=no --osd-level=0 --keepaspect-window=no \
+            --glsl-shaders="$PWD/t/kshplayer-lut-1-1.glsl" --glsl-shader-opts=ksh_k=1.0000,ksh_split=-1.0000 \
+            --script=.github/lut-test/shots.lua --script-opts=shotdir="$PWD/t" \
+            --msg-level=all=warn,vo=v --log-file=t/mpv.log t/v.mp4 || true
+          grep -iE "shader|hook|param|error|fail" t/mpv.log | head -40
+          ls -la t
+      - name: Vérifier les couleurs
+        run: python3 .github/lut-test/check.py t
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: lut-test
+          path: t/*.png

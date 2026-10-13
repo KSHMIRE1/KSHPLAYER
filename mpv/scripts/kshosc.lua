@@ -149,10 +149,10 @@ local function open_menu(kind, anchor_x)
 end
 
 -- ================= PRO : moteur LUT =================
--- • 100 % sans comparaison : LUT appliquée par la carte graphique (option mpv « lut »), zéro perte de perf.
--- • Intensité < 100 % ou avant/après : filtre FFmpeg (lut3d + blend) dont on règle le dosage / la séparation
---   en direct (vf-command), décodage en mode « copie » le temps de la comparaison.
-local LUT = { file = nil, k = 1.0, split = false, pos = 0.5, with_capture = false, cpu = false, hwdec = nil }
+-- Tout se passe sur la carte graphique : le .cube est converti en petit shader (texture 3D)
+-- dont l'intensité et la ligne avant/après sont des réglages modifiables en direct,
+-- sans filtre logiciel ni changement de décodage → aucun ralentissement, même en 4K HDR.
+local LUT = { file = nil, k = 1.0, split = false, pos = 0.5, with_capture = false, shader = nil, hwdec = nil, vf = false }
 local LUT_DB = (opts.lutdir ~= '') and utils.join_path(opts.lutdir, '..' .. (MAC and '/' or '\\') .. 'luts-par-dossier.json') or nil
 local lut_db_cache = nil
 
@@ -188,40 +188,128 @@ end
 
 local function vf_remove() mp.commandv('vf', 'remove', '@ksh') end
 
-local function apply_lut()
-    if not LUT.file then
-        mp.set_property('lut', '')
-        if LUT.cpu then vf_remove(); mp.set_property('hwdec', LUT.hwdec or 'auto-safe'); LUT.cpu = false end
-        return
+-- .cube → shader GPU (mis en cache : un fichier par LUT, refait si le .cube change)
+local TMP = os.getenv('TEMP') or os.getenv('TMPDIR') or '/tmp'
+local lut_cache, lut_seq = {}, 0
+local NUM = '([%-%+]?[%d%.]+[eE]?[%-%+]?%d*)'
+
+local function cube_to_shader(file)
+    local fi = utils.file_info(file)
+    if not fi then return nil end
+    local key = file .. '|' .. tostring(fi.size) .. '|' .. tostring(fi.mtime)
+    if lut_cache[key] then return lut_cache[key] end
+    local f = io.open(file, 'r')
+    if not f then return nil end
+    local size, dmin, dmax = nil, { 0, 0, 0 }, { 1, 1, 1 }
+    local hex, cnt = {}, 0
+    local function u16(x)
+        local v = math.floor((tonumber(x) or 0) * 65535 + 0.5)
+        if v < 0 then v = 0 elseif v > 65535 then v = 65535 end
+        return v
     end
-    if LUT.k >= 0.999 and not LUT.split then
-        -- chemin rapide : carte graphique
-        if LUT.cpu then vf_remove(); mp.set_property('hwdec', LUT.hwdec or 'auto-safe'); LUT.cpu = false end
-        mp.set_property('lut', LUT.file)
-        return
+    for line in f:lines() do
+        local l = line:gsub('^%s+', '')
+        local c = l:sub(1, 1)
+        if c:match('[%d%-%+%.]') then
+            local r, g, b = l:match('^' .. NUM .. '%s+' .. NUM .. '%s+' .. NUM)
+            if r then
+                r, g, b = u16(r), u16(g), u16(b)
+                cnt = cnt + 1
+                hex[cnt] = string.format('%02x%02x%02x%02x%02x%02xffff',
+                    r % 256, math.floor(r / 256), g % 256, math.floor(g / 256), b % 256, math.floor(b / 256))
+            end
+        elseif l:match('^LUT_3D_SIZE') then size = tonumber(l:match('^LUT_3D_SIZE%s+(%d+)'))
+        elseif l:match('^LUT_1D_SIZE') then f:close(); return nil
+        elseif l:match('^DOMAIN_MIN') then
+            local a, b2, c2 = l:match('^DOMAIN_MIN%s+' .. NUM .. '%s+' .. NUM .. '%s+' .. NUM)
+            if a then dmin = { tonumber(a), tonumber(b2), tonumber(c2) } end
+        elseif l:match('^DOMAIN_MAX') then
+            local a, b2, c2 = l:match('^DOMAIN_MAX%s+' .. NUM .. '%s+' .. NUM .. '%s+' .. NUM)
+            if a then dmax = { tonumber(a), tonumber(b2), tonumber(c2) } end
+        end
     end
-    -- chemin comparaison / dosage : filtre FFmpeg
-    mp.set_property('lut', '')
-    if not LUT.cpu then
-        LUT.hwdec = LUT.hwdec or mp.get_property('hwdec')
-        mp.set_property('hwdec', 'auto-copy-safe')
-    end
-    local g = string.format("split[ksha][kshb];[kshb]lut3d=file='%s'[kshc];[ksha][kshc]blend=all_expr='%s'",
-        ff_path(LUT.file), blend_expr(LUT.split and LUT.pos or 0, LUT.k))
-    vf_remove()
-    mp.commandv('vf', 'add', '@ksh:lavfi=graph=%' .. #g .. '%' .. g)
-    LUT.cpu = true
+    f:close()
+    if not size or size < 2 or cnt ~= size * size * size then return nil end
+    local rng = {}
+    for i = 1, 3 do rng[i] = (dmax[i] - dmin[i]) ~= 0 and (dmax[i] - dmin[i]) or 1 end
+    local S, O = (size - 1) / size, 0.5 / size
+    lut_seq = lut_seq + 1
+    local out = utils.join_path(TMP, string.format('kshplayer-lut-%d-%d.glsl', utils.getpid and utils.getpid() or 0, lut_seq))
+    local w = io.open(out, 'w')
+    if not w then return nil end
+    w:write(string.format([[
+//!PARAM ksh_k
+//!TYPE float
+//!MINIMUM 0.0
+//!MAXIMUM 1.0
+1.0
+
+//!PARAM ksh_split
+//!TYPE float
+//!MINIMUM -1.0
+//!MAXIMUM 1.0
+-1.0
+
+//!HOOK MAIN
+//!BIND HOOKED
+//!BIND KSHLUT
+//!DESC KSHPLAYER LUT
+vec4 hook() {
+    vec4 c = HOOKED_texOff(0);
+    vec3 x = clamp((c.rgb - vec3(%.6f, %.6f, %.6f)) / vec3(%.6f, %.6f, %.6f), 0.0, 1.0);
+    vec3 l = texture(KSHLUT, x * %.8f + %.8f).rgb;
+    float k = (HOOKED_pos.x < ksh_split) ? 0.0 : ksh_k;
+    c.rgb = mix(c.rgb, l, k);
+    return c;
+}
+
+//!TEXTURE KSHLUT
+//!SIZE %d %d %d
+//!FORMAT rgba16
+//!FILTER LINEAR
+]], dmin[1], dmin[2], dmin[3], rng[1], rng[2], rng[3], S, O, size, size, size))
+    w:write(table.concat(hex))
+    w:write('\n')
+    w:close()
+    lut_cache[key] = out
+    return out
 end
 
--- mise à jour en direct (glisser la séparation / l'intensité) sans reconstruire le filtre
+local function lut_params()
+    mp.set_property('glsl-shader-opts', string.format('ksh_k=%.4f,ksh_split=%.4f',
+        LUT.k, (LUT.split and LUT.pos) or -1))
+end
+
+local function shader_remove()
+    if LUT.shader then mp.commandv('change-list', 'glsl-shaders', 'remove', LUT.shader); LUT.shader = nil end
+end
+
+local function apply_lut()
+    if LUT.vf then vf_remove(); mp.set_property('hwdec', LUT.hwdec or 'auto-safe'); LUT.vf = false end
+    if not LUT.file then shader_remove(); mp.set_property('lut', ''); return end
+    local sh = cube_to_shader(LUT.file)
+    if not sh then
+        -- LUT 1D ou fichier inhabituel : moteur LUT intégré de mpv (100 %, sans comparaison)
+        shader_remove(); mp.set_property('lut', LUT.file)
+        return
+    end
+    mp.set_property('lut', '')
+    lut_params()
+    if LUT.shader ~= sh then
+        shader_remove()
+        mp.commandv('change-list', 'glsl-shaders', 'append', sh)
+        LUT.shader = sh
+    end
+end
+
+-- mise à jour en direct (glisser la séparation / l'intensité) : simple réglage du shader
 local last_live = 0
 local function lut_live(force)
-    if not LUT.cpu then apply_lut(); return end
+    if not LUT.shader then apply_lut(); return end
     local now = mp.get_time()
-    if not force and now - last_live < 0.05 then return end
+    if not force and now - last_live < 0.016 then return end
     last_live = now
-    local ok = mp.commandv('vf-command', 'ksh', 'all_expr', blend_expr(LUT.split and LUT.pos or 0, LUT.k), 'blend')
-    if not ok then apply_lut() end
+    lut_params()
 end
 
 local function set_lut(file, k)
@@ -306,12 +394,8 @@ function capture()
         mp.osd_message('Image enregistrée (PNG) dans ' .. where, 2)
         return
     end
-    -- capture AVEC la LUT : on applique la LUT (sans séparation) au filtre, on capture, on remet l'état
-    local was_split = LUT.split
-    LUT.split = false
-    local was_cpu = LUT.cpu
-    LUT.cpu = false; LUT.hwdec = LUT.hwdec or mp.get_property('hwdec')
-    mp.set_property('lut', '')
+    -- capture AVEC la LUT : filtre FFmpeg le temps d'une image (l'écran garde son réglage)
+    LUT.hwdec = mp.get_property('hwdec')
     mp.set_property('hwdec', 'auto-copy-safe')
     local g = string.format("lut3d=file='%s'", ff_path(LUT.file))
     if LUT.k < 0.999 then
@@ -319,11 +403,10 @@ function capture()
     end
     vf_remove()
     mp.commandv('vf', 'add', '@ksh:lavfi=graph=%' .. #g .. '%' .. g)
+    LUT.vf = true
+    if LUT.shader then mp.set_property('glsl-shader-opts', 'ksh_k=0,ksh_split=-1') end
     mp.add_timeout(0.6, function()
         mp.commandv('screenshot', 'video')
-        LUT.split = was_split
-        LUT.cpu = true
-        if not was_cpu and not was_split and LUT.k >= 0.999 then LUT.cpu = true end
         apply_lut()
         mp.osd_message('Image enregistrée AVEC la LUT (PNG) dans ' .. where, 2)
     end)
@@ -412,8 +495,7 @@ local function info_lines()
         (ap['channel-count'] and ('  ·  ' .. ap['channel-count'] .. ' canaux') or '') ..
         (ap.samplerate and string.format('  ·  %.1f kHz', ap.samplerate / 1000) or '') ..
         (ap.format and ('  ·  ' .. ap.format) or ''))
-    local lut = mp.get_property('lut', '')
-    if lut ~= '' then add('LUT', select(2, utils.split_path(lut))) end
+    if LUT.file then add('LUT', lut_name() .. string.format('  ·  %d %%', math.floor(LUT.k * 100 + 0.5))) end
     local drop = mp.get_property_number('frame-drop-count', 0)
     add('Images perdues', tostring(drop))
     return L
@@ -613,7 +695,7 @@ local function render()
             button(rx - 236 * s, 'crop_free', 22 * s, 'guides', function() cycle_guides() end, nil, guide_mode > 0)
             button(rx - 280 * s, 'gradient', 22 * s, 'lut',
                 function() if menu and menu.kind == 'lut' then menu = nil else open_lut_menu(rx - 280 * s) end end,
-                nil, (menu and menu.kind == 'lut') or (mp.get_property('lut', '') ~= ''))
+                nil, (menu and menu.kind == 'lut') or LUT.file ~= nil)
         end
 
         -- Ligne 2 : temps + timeline
