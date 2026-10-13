@@ -4,6 +4,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>KSHPLAYER</RootNamespace>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Version>
     <AssemblyName>KSHPLAYER</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\KSHPLAYER.ico</ApplicationIcon>
@@ -39,7 +40,9 @@
 
   <!-- Moteur libmpv (build x86_64 standard, compatible tous processeurs) : extrait une fois depuis l'archive -->
   <PropertyGroup>
-    <MpvArchive>$(USERPROFILE)\Downloads\mpv-dev-x86_64-20261012-git-88eb9f2e73.7z</MpvArchive>
+    <MpvArchiveName>mpv-dev-x86_64-20261012-git-88eb9f2e73.7z</MpvArchiveName>
+    <MpvArchive>$(MSBuildProjectDirectory)\third_party\mpv\$(MpvArchiveName)</MpvArchive>
+    <MpvArchive Condition="!Exists('$(MpvArchive)')">$(USERPROFILE)\Downloads\$(MpvArchiveName)</MpvArchive>
     <MpvEngineDir>$(MSBuildProjectDirectory)\engine</MpvEngineDir>
   </PropertyGroup>
 
@@ -61,6 +64,7 @@
     <!-- le projet d'installateur vit dans Setup\ : on l'exclut du lecteur -->
     <Compile Remove="Setup\**" />
     <None Remove="macOS\**" />
+    <None Remove="third_party\**" />
     <None Remove="Setup\**" />
     <EmbeddedResource Remove="Setup\**" />
     <!-- Identité KSHFLIX : logo, icône, police Unbounded (OFL) -->

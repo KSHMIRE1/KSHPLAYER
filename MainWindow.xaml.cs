@@ -37,12 +37,50 @@ public sealed partial class MainWindow : Window
 
         _hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         HardwareText.Text = $"{_hw.GpuName}  ·  {_hw.Label}";
+        VersionText.Text = $"·  v{Updater.Current.ToString(3)}";
+        _ = CheckUpdatesAsync();
         Closed += (_, _) => _player?.Dispose();
 
         // Lancement avec un fichier en argument (ex. « Ouvrir avec KSHPLAYER »)
         var args = Environment.GetCommandLineArgs();
         if (args.Length > 1)
             DispatcherQueue.TryEnqueue(() => Play(args[1]));
+    }
+
+    // ---------- Mises à jour ----------
+
+    private UpdateInfo? _update;
+
+    private async System.Threading.Tasks.Task CheckUpdatesAsync()
+    {
+        var u = await Updater.CheckAsync();
+        if (u == null) return;
+        _ = System.Threading.Tasks.Task.Run(() => Updater.MirrorToNasAsync(u));
+        if (!Updater.IsNewer(u)) return;
+        _update = u;
+        UpdateText.Text = $"Nouvelle version {u.Version.ToString(3)} disponible";
+        UpdateNotes.Text = u.Notes;
+        UpdateBar.Visibility = Visibility.Visible;
+    }
+
+    private async void OnUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_update == null) return;
+        UpdateButton.IsEnabled = false;
+        try
+        {
+            var progress = new Progress<double>(p => UpdateText.Text = $"Téléchargement de la mise à jour…  {p:P0}");
+            var path = await Updater.DownloadAsync(_update.SetupFile, progress);
+            UpdateText.Text = "Installation…";
+            Updater.LaunchInstaller(path);
+            Application.Current.Exit();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Mise à jour impossible", ex);
+            UpdateText.Text = "Échec du téléchargement, réessaie plus tard";
+            UpdateButton.IsEnabled = true;
+        }
     }
 
     private static readonly string[] SequenceExts = { "exr", "dpx", "tif", "tiff", "png", "jpg", "jpeg", "tga" };

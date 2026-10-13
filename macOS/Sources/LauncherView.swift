@@ -8,6 +8,7 @@ struct LauncherView: View {
     var onOpenFile: () -> Void
     var onOpenFolder: () -> Void
     var onDrop: (URL) -> Void
+    var update: Updater.Info? = nil
 
     @State private var hovering = false
     @State private var dropTarget = false
@@ -74,12 +75,38 @@ struct LauncherView: View {
                     .stroke(dropTarget ? Self.red : Color.white.opacity(0.1), lineWidth: dropTarget ? 2 : 1))
             }
 
+            // Bandeau de mise à jour
+            if let update {
+                VStack {
+                    HStack(spacing: 14) {
+                        Circle().fill(Self.red).frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Nouvelle version \(update.version) disponible")
+                                .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                            if !update.notes.isEmpty {
+                                Text(update.notes).font(.system(size: 11)).foregroundColor(Self.text2).lineLimit(2)
+                            }
+                        }.frame(maxWidth: 420, alignment: .leading)
+                        Button("Télécharger") { NSWorkspace.shared.open(update.dmgURL) }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 13, weight: .bold)).foregroundColor(.white)
+                            .padding(.horizontal, 14).padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Self.red))
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Self.surface))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Self.red))
+                    .padding(.top, 40)
+                    Spacer()
+                }
+            }
+
             // Pastille puce graphique / mode
             VStack {
                 Spacer()
                 HStack(spacing: 8) {
                     Circle().fill(Self.red).frame(width: 7, height: 7)
-                    Text("\(hw.gpuName)  ·  \(hw.label)").font(.system(size: 12)).foregroundColor(Self.text2)
+                    Text("\(hw.gpuName)  ·  \(hw.label)  ·  v\(Updater.current)").font(.system(size: 12)).foregroundColor(Self.text2)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Self.surface))

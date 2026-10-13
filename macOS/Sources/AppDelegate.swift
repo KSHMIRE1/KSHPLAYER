@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var player: PlayerWindowController?
     private var pendingURLs: [URL] = []
     private var ready = false
+    private var update: Updater.Info?
     private var status = Edition.isPro ? "Glisse un rush, un film ou un dossier de séquence d'images"
                                        : "Glisse un film ou un épisode ici"
 
@@ -29,6 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launcher.isReleasedWhenClosed = false
         refreshLauncher()
         launcher.center()
+
+        Updater.check { [weak self] info in
+            guard let self, let info else { return }
+            self.update = info
+            self.refreshLauncher()
+        }
 
         ready = true
         if let url = pendingURLs.first { pendingURLs.removeAll(); play(url) }
@@ -56,7 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hw: hw, status: status,
             onOpenFile: { [weak self] in self?.openFile() },
             onOpenFolder: { [weak self] in self?.openFolder() },
-            onDrop: { [weak self] url in self?.play(url) }))
+            onDrop: { [weak self] url in self?.play(url) },
+            update: update))
     }
 
     private static let sequenceExts = ["exr", "dpx", "tif", "tiff", "png", "jpg", "jpeg", "tga"]

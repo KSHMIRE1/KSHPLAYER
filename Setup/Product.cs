@@ -16,7 +16,7 @@ namespace KSHPLAYER.Setup
         public const string Key = "KSHPLAYER";
         public const string Tagline = "Le lecteur qui lit tout, en 4K HDR, sans prise de tête.";
 #endif
-        public const string Version = "1.0.0";
+        public static readonly string Version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
         public const string Publisher = "KSHMIRE";
 
         /// <summary>Descriptif affiché à l'ouverture de l'installateur : (titre, détail).</summary>

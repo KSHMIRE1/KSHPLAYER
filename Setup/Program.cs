@@ -6,11 +6,12 @@ namespace KSHPLAYER.Setup
     internal static class Program
     {
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new SetupForm());
+            bool update = System.Array.Exists(args, a => a.Equals("/update", System.StringComparison.OrdinalIgnoreCase));
+            Application.Run(new SetupForm(update));
         }
     }
 }

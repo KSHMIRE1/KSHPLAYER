@@ -113,6 +113,11 @@ namespace KSHPLAYER.Setup
         // ----- « Ouvrir avec » pour les vidéos -----
         private static string ProgId => Product.Key + ".Video";
 
+        public static bool OpenWithRegistered()
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Classes\" + ProgId)) return k != null;
+        }
+
         private static void RegisterOpenWith()
         {
             var cmd = "\"" + ExePath + "\" \"%1\"";

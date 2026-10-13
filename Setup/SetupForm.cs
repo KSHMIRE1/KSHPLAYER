@@ -32,11 +32,13 @@ namespace KSHPLAYER.Setup
         private readonly Label _status;
         private double _progress = -1;
         private bool _done;
+        private readonly bool _updateMode;
 
         private int P(float v) => (int)Math.Round(v * S);
 
-        public SetupForm()
+        public SetupForm(bool updateMode = false)
         {
+            _updateMode = updateMode;
             using (var g = CreateGraphics()) S = g.DpiX / 96f;
             AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
@@ -88,6 +90,18 @@ namespace KSHPLAYER.Setup
             _install.Click += OnInstall;
 
             MouseDown += DragWindow;
+
+            if (_updateMode)
+            {
+                // mise à jour depuis l'appli : on garde les choix précédents et on installe tout de suite
+                _desktop.Checked = System.IO.File.Exists(Installer.DesktopLink);
+                _openWith.Checked = Installer.OpenWithRegistered();
+                Shown += async (s, e) =>
+                {
+                    await Task.Delay(400);
+                    OnInstall(this, EventArgs.Empty);
+                };
+            }
         }
 
         private CheckBox MakeCheck(string text, int x, int y)
@@ -193,6 +207,11 @@ namespace KSHPLAYER.Setup
                 Close();
                 return;
             }
+            if (_updateMode)
+            {
+                // laisse à KSHPLAYER le temps de se fermer
+                for (int i = 0; i < 40 && Installer.IsRunning(); i++) await Task.Delay(250);
+            }
             if (Installer.IsRunning())
             {
                 _status.ForeColor = Pink;
@@ -220,6 +239,12 @@ namespace KSHPLAYER.Setup
                 _install.Enabled = true;
                 _cancel.Text = "Fermer";
                 _cancel.Enabled = true;
+                if (_updateMode)
+                {
+                    _status.Text = "✓  Mise à jour " + Product.Version + " installée, relance de " + Product.Name + "…";
+                    await Task.Delay(900);
+                    OnInstall(this, EventArgs.Empty);   // _done = true -> lance l'appli et ferme
+                }
             }
             catch (Exception ex)
             {

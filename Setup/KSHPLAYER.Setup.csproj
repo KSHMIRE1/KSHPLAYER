@@ -20,7 +20,7 @@
     <AssemblyName>KSHPLAYER-Setup</AssemblyName>
     <KshAppConfig>Release</KshAppConfig>
     <AppExe>KSHPLAYER.exe</AppExe>
-    <Version>1.0.0</Version>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\VERSION').Trim())</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'DebugPro' Or '$(Configuration)' == 'ReleasePro'">
