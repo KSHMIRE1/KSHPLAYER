@@ -1,0 +1,110 @@
+# KSHPLAYER · fabrique et publie toutes les versions à chaque envoi sur « main » :
+#   Windows : KSHPLAYER-Setup.exe, KSHPLAYER-PRO-Setup.exe
+#   Mac     : KSHPLAYER.dmg, KSHPLAYER-PRO.dmg (Apple Silicon + Intel)
+# Les 4 fichiers + version.json sont publiés sur la branche « telechargements »
+# (liens directs raw.githubusercontent.com) : c'est là que les applis cherchent leurs mises à jour.
+# Pour publier une nouvelle version : changer le numéro dans VERSION (et le texte de NOTES.txt).
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Installateurs Windows (normal + PRO)
+        shell: pwsh
+        run: |
+          foreach ($c in "Release", "ReleasePro") {
+            dotnet msbuild Setup/KSHPLAYER.Setup.csproj -restore -p:Configuration=$c -p:Platform=x64 -v:m -nologo *> "build-$c.log"
+            if ($LASTEXITCODE -ne 0) {
+              Select-String -Path "build-$c.log" -Pattern "error" | Select-Object -First 40 | ForEach-Object { "::error::$($_.Line.Trim())" }
+              Get-Content "build-$c.log" -Tail 40
+              exit 1
+            }
+          }
+          Get-ChildItem Setup/bin/x64/*/net48/*.exe | ForEach-Object { "::notice::$($_.Name) : $([math]::Round($_.Length / 1MB)) Mo" }
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows
+          path: Setup/bin/x64/*/net48/*.exe
+
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Outils
+        run: brew install xcodegen
+
+      - name: Préparer le projet
+        run: |
+          bash macOS/prepare.sh
+          cd macOS && xcodegen generate
+
+      - name: Compiler (normal + PRO)
+        run: |
+          cd macOS
+          V="$(tr -d '[:space:]' < ../VERSION)"
+          for S in "KSHPLAYER" "KSHPLAYER PRO"; do
+            xcodebuild -project KSHPLAYER.xcodeproj -scheme "$S" -configuration Release \
+              -destination 'generic/platform=macOS' -derivedDataPath build \
+              -skipPackagePluginValidation ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+              MARKETING_VERSION="$V" build > build.log 2>&1 \
+              || { grep -E "error:|fatal" build.log | sort -u | head -40 | sed 's/^/::error::/'; tail -n 40 build.log; exit 1; }
+            echo "::notice::$(lipo -info "build/Build/Products/Release/$S.app/Contents/MacOS/$S")"
+          done
+
+      - name: Fabriquer les .dmg
+        run: |
+          bash macOS/make-dmg.sh
+          for f in macOS/dist/*.dmg; do echo "::notice::$(basename "$f") : $(du -h "$f" | cut -f1)"; done
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: mac
+          path: macOS/dist/*.dmg
+
+  publish:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          path: dl
+
+      - name: Publier sur la branche telechargements
+        run: |
+          mkdir pub
+          find dl -name "*.exe" -exec cp {} pub/ \;
+          find dl -name "*.dmg" -exec cp {} pub/ \;
+          V="$(tr -d '[:space:]' < VERSION)"
+          python3 .github/version_json.py "$V" pub/version.json
+          ls -la pub
+          cd pub
+          git init -q -b telechargements
+          git add .
+          git -c user.name="KSHPLAYER CI" -c user.email="ci@kshplayer.local" commit -qm "KSHPLAYER $V"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" telechargements
+          echo "::notice::KSHPLAYER $V publié"
