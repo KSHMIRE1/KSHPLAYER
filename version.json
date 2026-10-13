@@ -1,0 +1,11 @@
+{
+  "version": "1.1.1",
+  "date": "2026-10-13",
+  "notes": "PRO : LUT entièrement sur la carte graphique — intensité et avant/après fluides, même en 4K HDR",
+  "files": {
+    "windows": "KSHPLAYER-Setup.exe",
+    "windows_pro": "KSHPLAYER-PRO-Setup.exe",
+    "mac": "KSHPLAYER.dmg",
+    "mac_pro": "KSHPLAYER-PRO.dmg"
+  }
+}
