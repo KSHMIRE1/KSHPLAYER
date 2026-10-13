@@ -761,7 +761,11 @@ local function render()
         local fs = mp.get_property_native('fullscreen')
         tbtn(1, 'remove', 'min', function() mp.commandv('cycle', 'window-minimized') end)
         tbtn(2, fs and 'fullscreen_exit' or 'fullscreen', 'tfs', function() mp.commandv('cycle', 'fullscreen') end)
-        tbtn(3, 'close', 'close', function() mp.commandv('quit') end, ACCENT)
+        tbtn(3, 'close', 'close', function()
+            -- la croix ferme toute l'appli (la fin du film, elle, ramène à l'accueil)
+            mp.set_property('user-data/kshosc/exit-app', 'yes')
+            mp.add_timeout(0.08, function() mp.commandv('quit') end)
+        end, ACCENT)
         regions[#regions + 1] = { x1 = tx, y1 = ty, x2 = tx + tw, y2 = ty + 44 * s, id = 'topbg' }
     end
 

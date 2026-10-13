@@ -94,7 +94,10 @@ public sealed partial class MainWindow : Window
 
     private void OnPlaybackClosed()
     {
+        bool exitApp = _player?.ExitAppRequested == true;
         _player?.Dispose();
+        _player = null;
+        if (exitApp) { Close(); return; }   // croix -> on ferme KSHPLAYER
         _player = null;
         StatusText.Text = Edition.IsPro ? "Glisse un rush, un film ou un dossier de séquence d'images" : "Glisse un film ou un épisode ici";
         AppWindow.Show();

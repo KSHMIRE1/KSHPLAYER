@@ -22,9 +22,12 @@ public sealed class MpvPlayer : IDisposable
     public event Action? FileLoaded;
     /// <summary>mpv s'arrête (ex. touche Q).</summary>
     public event Action? Shutdown;
+    /// <summary>L'utilisateur a cliqué sur la croix : fermer toute l'appli, pas seulement la vidéo.</summary>
+    public bool ExitAppRequested { get; private set; }
 
     private const ulong ObsFullscreen = 1;
     private const ulong ObsTitle = 2;
+    private const ulong ObsExitApp = 3;
 
     public MpvPlayer(string configDir, HardwareProfile hw)
     {
@@ -108,6 +111,7 @@ public sealed class MpvPlayer : IDisposable
 
         mpv_observe_property(_ctx, ObsFullscreen, "fullscreen", MPV_FORMAT_FLAG);
         mpv_observe_property(_ctx, ObsTitle, "media-title", MPV_FORMAT_STRING);
+        mpv_observe_property(_ctx, ObsExitApp, "user-data/kshosc/exit-app", MPV_FORMAT_STRING);
 
         _eventThread = new Thread(EventLoop) { IsBackground = true, Name = "mpv-events" };
         _eventThread.Start();
@@ -189,6 +193,8 @@ public sealed class MpvPlayer : IDisposable
                     if (prop.Data == IntPtr.Zero) break;
                     if (ev.ReplyUserdata == ObsFullscreen && prop.Format == MPV_FORMAT_FLAG)
                         FullscreenChanged?.Invoke(Marshal.ReadInt32(prop.Data) != 0);
+                    else if (ev.ReplyUserdata == ObsExitApp && prop.Format == MPV_FORMAT_STRING)
+                        ExitAppRequested = Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(prop.Data)) == "yes";
                     else if (ev.ReplyUserdata == ObsTitle && prop.Format == MPV_FORMAT_STRING)
                         TitleChanged?.Invoke(Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(prop.Data)) ?? "");
                     break;
