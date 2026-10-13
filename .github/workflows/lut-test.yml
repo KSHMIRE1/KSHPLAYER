@@ -25,7 +25,7 @@ jobs:
                           f.write(f"{b/(n-1):.6f} {g/(n-1):.6f} {r/(n-1):.6f}\n")
           EOF
           luajit .github/lut-test/gen.lua mpv/scripts/kshosc.lua t/swap.cube "$PWD/t"
-          head -c 1200 t/kshplayer-lut-1-1.glsl; echo; wc -c t/kshplayer-lut-1-1.glsl
+          echo "::notice title=shader::$(wc -c < t/kshplayer-lut-1-1.glsl) octets"
       - name: Lecture mpv gpu-next + captures
         run: |
           ffmpeg -v error -f lavfi -i "testsrc2=s=640x360:r=25,format=yuv420p" -t 4 t/v.mp4
@@ -35,10 +35,10 @@ jobs:
             --glsl-shaders="$PWD/t/kshplayer-lut-1-1.glsl" --glsl-shader-opts=ksh_k=1.0000,ksh_split=-1.0000 \
             --script=.github/lut-test/shots.lua --script-opts=shotdir="$PWD/t" \
             --msg-level=all=warn,vo=v --log-file=t/mpv.log t/v.mp4 || true
-          grep -iE "shader|hook|param|error|fail" t/mpv.log | head -40
-          ls -la t
+          { mpv --version | head -2; grep -iE "shader|hook|param|error|fail|vulkan|placebo|screenshot" t/mpv.log | head -40; ls t; } > t/rep.txt 2>&1
+          echo "::notice title=mpv::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' t/rep.txt | cut -c1-6000)"
       - name: Vérifier les couleurs
-        run: python3 .github/lut-test/check.py t
+        run: python3 .github/lut-test/check.py t > t/res.txt 2>&1; r=$?; echo "::notice title=couleurs::$(sed ':a;N;$!ba;s/\n/%0A/g' t/res.txt)"; exit $r
       - uses: actions/upload-artifact@v5
         if: always()
         with:
