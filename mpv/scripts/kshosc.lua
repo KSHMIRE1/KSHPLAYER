@@ -489,11 +489,23 @@ local function render_guides(ass, s)
     end
 end
 
+-- ---------- Mise en page adaptative (paysage, portrait, petites fenêtres) ----------
+-- Taille de base = hauteur ; si la fenêtre est trop étroite (vidéo portrait), on réduit l'échelle
+-- et on passe en barre « compacte » (sans curseur de volume ni ±10 s).
+local function layout()
+    local sh = math.max(0.75, math.min(1.7, H / 900))
+    local full = PRO and 1000 or 860
+    local compact = W < full * sh
+    local base = compact and (PRO and 600 or 460) or full
+    local sc = math.min(sh, (W - 16) / base)
+    return math.max(0.5, math.min(1.7, sc)), compact
+end
+
 -- ---------- Dessin ----------
 local function render()
     regions = {}
     local ass = {}
-    local s = math.max(0.75, math.min(1.7, H / 900))
+    local s, compact = layout()
     local fb, ft = fade.bottom, fade.top
 
     if PRO and LUT.split and LUT.file then
@@ -519,7 +531,7 @@ local function render()
     if PRO and guide_mode == 0 and mp.get_time() < guide_flash then render_guides(ass, s) end
 
     -- === Pilule du bas (style KSHFLIX) ===
-    local pw = math.min((PRO and 980 or 820) * s, W - 48 * s)
+    local pw = math.min((compact and (PRO and 580 or 440) or (PRO and 980 or 820)) * s, W - 16 * s)
     local ph = 104 * s
     local px = (W - pw) / 2
     local py = H - ph - 26 * s
@@ -548,6 +560,7 @@ local function render()
         local function vol_wheel(dir) mp.commandv('add', 'volume', tostring(dir * 5)) end
         button(px + 34 * s, muted and 'volume_off' or (vol < 50 and 'volume_down' or 'volume_up'), 23 * s, 'vol',
             function() mp.commandv('cycle', 'mute') end, vol_wheel)
+        if not compact then
         local vx1, vx2 = px + 60 * s, px + 150 * s
         local vr = math.max(0, math.min(1, vol / vmax))
         ass[#ass + 1] = rrect(vx1, row1 - 2 * s, vx2 - vx1, 4 * s, 2 * s, WHITE, 0.22, fb)
@@ -563,12 +576,15 @@ local function render()
         end
         regions[#regions + 1] = { x1 = vx1 - 8 * s, y1 = row1 - 14 * s, x2 = vx2 + 8 * s, y2 = row1 + 14 * s, id = 'volbar',
             vx1 = vx1, vx2 = vx2, vmax = vmax, wheel = vol_wheel }
+        end
 
         -- Centre : -10 s / lecture / +10 s
-        local cx = px + pw / 2
+        local cx = compact and (px + 82 * s) or (px + pw / 2)
         local paused = mp.get_property_native('pause')
-        button(cx - 62 * s, 'replay_10', 25 * s, 'back', function() mp.commandv('seek', '-10') end)
-        button(cx + 62 * s, 'forward_10', 25 * s, 'fwd', function() mp.commandv('seek', '10') end)
+        if not compact then
+            button(cx - 62 * s, 'replay_10', 25 * s, 'back', function() mp.commandv('seek', '-10') end)
+            button(cx + 62 * s, 'forward_10', 25 * s, 'fwd', function() mp.commandv('seek', '10') end)
+        end
         local pr = { x1 = cx - 24 * s, y1 = row1 - 24 * s, x2 = cx + 24 * s, y2 = row1 + 24 * s, id = 'play',
                      click = function() mp.commandv('cycle', 'pause') end }
         local phov = inside(pr, mouse.x, mouse.y)
@@ -924,7 +940,7 @@ mp.add_periodic_timer(1 / 30, function()
     last_tick = now
     if W <= 0 or H <= 0 then return end
 
-    local s = math.max(0.75, math.min(1.7, H / 900))
+    local s = layout()
     if MAC and mp.get_property('user-data/kshosc/leave') == 'yes' then mouse.hover = false end
     local recent = (now - last_move) < HIDE_DELAY and mouse.hover
     local over = region_at(mouse.x, mouse.y) ~= nil and mouse.hover

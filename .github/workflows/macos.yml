@@ -60,6 +60,16 @@ jobs:
           bash macOS/make-dmg.sh
           for f in macOS/dist/*.dmg; do echo "::notice::$(basename "$f") : $(du -h "$f" | cut -f1)"; done
 
+      - name: Mettre les .dmg en téléchargement direct (branche telechargements)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir pub && cp macOS/dist/*.dmg pub/
+          cd pub
+          git init -q -b telechargements
+          git add .
+          git -c user.name="KSHPLAYER CI" -c user.email="ci@kshplayer.local" commit -qm "dmg ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" telechargements
+
       - uses: actions/upload-artifact@v5
         with:
           name: KSHPLAYER-macOS

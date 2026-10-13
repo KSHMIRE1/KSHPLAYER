@@ -68,6 +68,24 @@
   </Target>
 
   <!--
+    Après compilation (Release / ReleasePro) : copie de l'installateur sur le NAS
+    et récupération des dernières versions Mac (.dmg) depuis GitHub.
+      K:\Backup\Logiciel KSHPC\KSHPLAYER\Windows\   et   \Mac\
+  -->
+  <PropertyGroup>
+    <KshNasDir>K:\Backup\Logiciel KSHPC\KSHPLAYER</KshNasDir>
+    <KshDmgUrl>https://raw.githubusercontent.com/KSHMIRE1/KSHPLAYER/telechargements</KshDmgUrl>
+  </PropertyGroup>
+  <Target Name="KshDeployNas" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'ReleasePro'">
+    <Message Importance="high" Condition="!Exists('K:\Backup')" Text="KSHPLAYER : NAS (K:) introuvable, copie ignorée." />
+    <MakeDir Condition="Exists('K:\Backup')" Directories="$(KshNasDir)\Windows;$(KshNasDir)\Mac" ContinueOnError="true" />
+    <Copy Condition="Exists('K:\Backup')" SourceFiles="$(TargetPath)" DestinationFolder="$(KshNasDir)\Windows" ContinueOnError="true" />
+    <DownloadFile Condition="Exists('K:\Backup')" SourceUrl="$(KshDmgUrl)/KSHPLAYER.dmg" DestinationFolder="$(KshNasDir)\Mac" ContinueOnError="true" />
+    <DownloadFile Condition="Exists('K:\Backup')" SourceUrl="$(KshDmgUrl)/KSHPLAYER-PRO.dmg" DestinationFolder="$(KshNasDir)\Mac" ContinueOnError="true" />
+    <Message Importance="high" Condition="Exists('K:\Backup')" Text="KSHPLAYER : installateurs copiés sur le NAS ($(KshNasDir))" />
+  </Target>
+
+  <!--
     KshPack : compresse chaque fichier du lecteur avec LZMS, l'algorithme de compression intégré à Windows
     (celui des images d'installation de Windows). Rien à installer, et l'installateur décompresse avec le même moteur.
     Format : "KSHPAK1" | nb fichiers | (chemin, taille, mode, taille compressée, données)…
