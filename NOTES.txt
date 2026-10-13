@@ -1,1 +1,1 @@
-Barre de contrôle adaptée aux vidéos en portrait · la croix ferme l'appli · PRO : LUT avant/après, intensité, mémoire par dossier, captures avec LUT · mises à jour automatiques
+PRO : LUT entièrement sur la carte graphique — intensité et avant/après fluides, même en 4K HDR
