@@ -30,7 +30,7 @@ jobs:
         run: |
           ffmpeg -v error -f lavfi -i "testsrc2=s=640x360:r=25,format=yuv420p" -t 4 t/v.mp4
           mpv --version | head -2
-          xvfb-run -s "-screen 0 1280x720x24" mpv --no-config --vo=gpu-next --gpu-api=vulkan --gpu-context=x11vk --gpu-sw --hwdec=no \
+          xvfb-run -s "-screen 0 1280x720x24" mpv --no-config --vo=gpu-next --gpu-api=opengl --gpu-context=x11egl --gpu-sw --hwdec=no \
             --pause --geometry=640x360 --no-border --osc=no --osd-level=0 --keepaspect-window=no \
             --glsl-shaders="$PWD/t/kshplayer-lut-1-1.glsl" --glsl-shader-opts=ksh_k=1.0000,ksh_split=-1.0000 \
             --script=.github/lut-test/shots.lua --script-opts=shotdir="$PWD/t" \
