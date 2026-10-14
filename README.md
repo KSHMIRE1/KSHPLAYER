@@ -10,4 +10,6 @@ Deux éditions : **KSHPLAYER** (tout le monde) et **KSHPLAYER PRO** (monteurs : 
 | `mpv/` | Partagé Windows + Mac : barre de contrôle `kshosc.lua`, icônes, raccourcis |
 | `macOS/` | Appli Mac (Swift / AppKit + MPVKit), compilée par GitHub Actions |
 
-**Mac :** onglet *Actions* > *macOS* > les `.dmg` sont dans *Artifacts*.
+**Téléchargements** (fabriqués par GitHub à chaque push sur `main`) : branche `telechargements`.
+
+**Reprendre le projet / compiler :** voir [`CLAUDE.md`](CLAUDE.md).
