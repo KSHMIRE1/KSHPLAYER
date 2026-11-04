@@ -27,18 +27,32 @@ namespace KSHPLAYER.Setup
         private readonly float S;
         private readonly Image _logo;
         private readonly FeatureView _features;
-        private readonly CheckBox _desktop, _openWith;
+        private readonly CheckBox _desktop, _openWith, _apercu;
         private readonly Button _install, _cancel;
         private readonly Label _status;
         private double _progress = -1;
-        private bool _done;
+        private bool _done, _busy, _closing;
         private readonly bool _updateMode;
+        private readonly int _pid;     // lecteur qui a lancé la mise à jour (1.2) ; 0 = ancienne version ou installation
+
+        // Écran adapté à ce qui est déjà installé (comme Orbit Look) : installation, mise à jour, réinstallation…
+        private enum Mode { Install, Update, Reinstall, Downgrade }
+        private readonly Mode _mode;
+        private readonly Version _installed;
 
         private int P(float v) => (int)Math.Round(v * S);
 
-        public SetupForm(bool updateMode = false)
+        public SetupForm(bool updateMode = false, int pid = 0)
         {
             _updateMode = updateMode;
+            _pid = pid;
+            FormClosing += (s, e) => _closing = true;
+            _installed = Installer.InstalledVersion();
+            var current = Installer.CurrentVersion;
+            _mode = _installed == null ? Mode.Install
+                  : _installed < current ? Mode.Update
+                  : _installed == current ? Mode.Reinstall
+                  : Mode.Downgrade;
             using (var g = CreateGraphics()) S = g.DpiX / 96f;
             AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
@@ -46,8 +60,8 @@ namespace KSHPLAYER.Setup
             BackColor = Bg;
             ForeColor = Text1;
             Font = new Font("Segoe UI", 9.5f);
-            ClientSize = new Size(P(860), P(Product.IsPro ? 720 : 640));
-            Text = "Installation de " + Product.Name;
+            ClientSize = new Size(P(860), P(Product.IsPro ? 748 : 668));
+            Text = (_mode == Mode.Install ? "Installation de " : "Mise à jour de ") + Product.Name;
             DoubleBuffered = true;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("logo.png"))
@@ -65,17 +79,32 @@ namespace KSHPLAYER.Setup
             // Descriptif des fonctions
             _features = new FeatureView(S)
             {
-                Bounds = new Rectangle(P(40), P(186), ClientSize.Width - P(80), ClientSize.Height - P(186) - P(150)),
+                Bounds = new Rectangle(P(40), P(186), ClientSize.Width - P(80), ClientSize.Height - P(186) - P(178)),
             };
+            if (_mode == Mode.Update)
+            {
+                var notes = ReadNotes();
+                if (notes != "") _features.Highlight = new[] { "Nouveautés de la version " + Product.Version, notes };
+            }
             Controls.Add(_features);
 
             // Options
-            _desktop = MakeCheck("Créer un raccourci sur le Bureau", P(40), ClientSize.Height - P(132));
-            _openWith = MakeCheck("Ajouter " + Product.Name + " à « Ouvrir avec » pour les vidéos", P(40), ClientSize.Height - P(104));
+            _desktop = MakeCheck("Créer un raccourci sur le Bureau", P(40), ClientSize.Height - P(160));
+            _openWith = MakeCheck("Ajouter " + Product.Name + " à « Ouvrir avec » pour les vidéos", P(40), ClientSize.Height - P(132));
+            _apercu = MakeCheck("Aperçu des vidéos avec la barre Espace dans l'Explorateur (lancé avec Windows)", P(40), ClientSize.Height - P(104));
+
+            if (_mode != Mode.Install || _updateMode)
+            {
+                // déjà installé : on reprend les choix précédents
+                _desktop.Checked = System.IO.File.Exists(Installer.DesktopLink);
+                _openWith.Checked = Installer.OpenWithRegistered();
+                // l'aperçu est nouveau en 1.2 : coché par défaut si la version installée ne l'avait pas encore
+                _apercu.Checked = !System.IO.File.Exists(Installer.ApercuPath) || Installer.ApercuAtStartup();
+            }
 
             _status = new Label
             {
-                Text = "Installé dans " + Installer.InstallDir, ForeColor = Text3, BackColor = Bg,
+                Text = StatusIntro(), ForeColor = Text3, BackColor = Bg,
                 Font = new Font("Segoe UI", 8.5f), AutoSize = false, AutoEllipsis = true,
                 Bounds = new Rectangle(P(40), ClientSize.Height - P(66), ClientSize.Width - P(400), P(40)),
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -85,7 +114,10 @@ namespace KSHPLAYER.Setup
             _cancel = MakeButton("Annuler", false);
             _cancel.Bounds = new Rectangle(ClientSize.Width - P(340), ClientSize.Height - P(70), P(120), P(46));
             _cancel.Click += (s, e) => Close();
-            _install = MakeButton("Installer  →", true);
+            _install = MakeButton(_mode == Mode.Update ? "Mettre à jour  →"
+                                : _mode == Mode.Reinstall ? "Réinstaller  →"
+                                : _mode == Mode.Downgrade ? "Remplacer  →"
+                                : "Installer  →", true);
             _install.Bounds = new Rectangle(ClientSize.Width - P(208), ClientSize.Height - P(70), P(168), P(46));
             _install.Click += OnInstall;
 
@@ -93,9 +125,7 @@ namespace KSHPLAYER.Setup
 
             if (_updateMode)
             {
-                // mise à jour depuis l'appli : on garde les choix précédents et on installe tout de suite
-                _desktop.Checked = System.IO.File.Exists(Installer.DesktopLink);
-                _openWith.Checked = Installer.OpenWithRegistered();
+                // mise à jour depuis l'appli : choix précédents (repris plus haut) et installation tout de suite
                 Shown += async (s, e) =>
                 {
                     await Task.Delay(400);
@@ -133,6 +163,28 @@ namespace KSHPLAYER.Setup
             return b;
         }
 
+        private string StatusIntro()
+        {
+            switch (_mode)
+            {
+                case Mode.Update: return "Tes réglages sont gardés. " + Product.Name + " sera fermé s'il est ouvert.";
+                case Mode.Reinstall: return "Réinstallation dans " + Installer.InstallDir;
+                case Mode.Downgrade: return "Une version plus récente (" + _installed.ToString(3) + ") est installée : elle sera remplacée par la " + Product.Version + ".";
+                default: return "Installé dans " + Installer.InstallDir;
+            }
+        }
+
+        /// <summary>Texte de NOTES.txt (embarqué à la compilation) : les nouveautés de cette version.</summary>
+        private static string ReadNotes()
+        {
+            try
+            {
+                using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("notes.txt"))
+                    return s == null ? "" : new System.IO.StreamReader(s, System.Text.Encoding.UTF8).ReadToEnd().Trim();
+            }
+            catch { return ""; }
+        }
+
         // ---------------- Dessin de l'en-tête et de la barre de progression ----------------
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -167,9 +219,17 @@ namespace KSHPLAYER.Setup
 
             // séparateur + titre de section
             using (var pen = new Pen(Line, Math.Max(1, S))) g.DrawLine(pen, P(40), P(140), ClientSize.Width - P(40), P(140));
+            string eyebrow;
+            switch (_mode)
+            {
+                case Mode.Update: eyebrow = "MISE À JOUR   ·   " + _installed.ToString(3) + "   →   " + Product.Version; break;
+                case Mode.Reinstall: eyebrow = "DÉJÀ INSTALLÉ   ·   VERSION " + Product.Version; break;
+                case Mode.Downgrade: eyebrow = "VERSION PLUS RÉCENTE DÉJÀ INSTALLÉE   ·   " + _installed.ToString(3); break;
+                default: eyebrow = "CE QUE FAIT " + Product.Name; break;
+            }
             using (var fEye = new Font("Segoe UI", 8.5f, FontStyle.Bold))
             using (var b = new SolidBrush(Pink))
-                g.DrawString(("CE QUE FAIT " + Product.Name).ToUpperInvariant(), fEye, b, P(40), P(156));
+                g.DrawString(eyebrow.ToUpperInvariant(), fEye, b, P(40), P(156));
             using (var fVer = new Font("Segoe UI", 8.5f))
             using (var b = new SolidBrush(Text3))
             using (var sf = new StringFormat { Alignment = StringAlignment.Far })
@@ -207,43 +267,82 @@ namespace KSHPLAYER.Setup
                 Close();
                 return;
             }
+            if (_busy) return;   // un seul clic compte
+            _busy = true;
+            _install.Enabled = _cancel.Enabled = _desktop.Enabled = _openWith.Enabled = _apercu.Enabled = false;
+            _install.Text = _mode == Mode.Install ? "Installation…" : "Mise à jour…";
+            _status.ForeColor = Text2;
+            // mise à jour préparée par le lecteur 1.2 (/pid) : on ne coupe jamais une vidéo
+            bool keepPlayer = _updateMode && _pid > 0;
             if (_updateMode)
             {
-                // laisse à KSHPLAYER le temps de se fermer
-                for (int i = 0; i < 40 && Installer.IsRunning(); i++) await Task.Delay(250);
+                if (keepPlayer)
+                {
+                    await WaitForExitAsync(_pid, 30000);        // le lecteur qui nous a lancés se referme
+                    if (!await WaitNoPlayerAsync()) return;      // une autre vidéo est ouverte : on attend (Annuler possible)
+                }
+                else
+                {
+                    // lancée par une ancienne version (1.1.x) : comme avant, 10 s pour se fermer, puis on la ferme
+                    for (int i = 0; i < 40 && Installer.IsAppRunning(); i++) await Task.Delay(250);
+                }
+                if (Installer.InstalledVersion() == null) { Close(); return; }   // désinstallé entre-temps
             }
-            if (Installer.IsRunning())
+            if (!keepPlayer && Installer.IsRunning())
             {
-                _status.ForeColor = Pink;
-                _status.Text = Product.Name + " est ouvert : ferme-le puis clique à nouveau sur Installer.";
-                return;
+                // comme Orbit Look : on ferme l'appli et son aperçu nous-mêmes, au lieu de demander
+                _status.Text = "Fermeture de " + Product.Name + "…";
+                if (!await Task.Run(() => Installer.StopRunning()))
+                {
+                    _status.ForeColor = Pink;
+                    _status.Text = Product.Name + " refuse de se fermer : ferme-le puis clique à nouveau.";
+                    _install.Text = "Réessayer";
+                    _install.Enabled = _cancel.Enabled = _desktop.Enabled = _openWith.Enabled = _apercu.Enabled = true;
+                    _busy = false;
+                    return;
+                }
             }
-
-            _install.Enabled = _cancel.Enabled = _desktop.Enabled = _openWith.Enabled = false;
-            _install.Text = "Installation…";
-            _status.ForeColor = Text2;
             _status.Text = "Copie de " + Product.Name + "…";
             _progress = 0; Invalidate();
-            bool desktop = _desktop.Checked, openWith = _openWith.Checked;
+            bool desktop = _desktop.Checked, openWith = _openWith.Checked, apercu = _apercu.Checked;
+            bool hadApercu = System.IO.File.Exists(Installer.ApercuPath);
             try
             {
-                await Task.Run(() => Installer.Install(desktop, openWith, p => BeginInvoke(new Action(() =>
+                while (true)
                 {
-                    _progress = p;
-                    Invalidate(new Rectangle(0, ClientSize.Height - P(30), ClientSize.Width, P(30)));
-                }))));
+                    try
+                    {
+                        await Task.Run(() => Installer.Install(desktop, openWith, apercu, p => BeginInvoke(new Action(() =>
+                        {
+                            _progress = p;
+                            Invalidate(new Rectangle(0, ClientSize.Height - P(30), ClientSize.Width, P(30)));
+                        })), keepPlayer));
+                        break;
+                    }
+                    catch (PlayerRunningException)
+                    {
+                        // une vidéo a été ouverte juste avant la copie : on attend qu'elle soit refermée, puis on recommence
+                        if (!await WaitNoPlayerAsync()) return;
+                        _status.Text = "Copie de " + Product.Name + "…";
+                    }
+                }
+                if (apercu) Installer.StartApercu(welcome: !hadApercu);
                 _done = true;
                 _status.ForeColor = Text1;
-                _status.Text = "✓  " + Product.Name + " est installé. Tu le trouves dans le menu Démarrer.";
-                _install.Text = "Lancer  →";
+                _status.Text = _mode == Mode.Update ? "✓  " + Product.Name + " est à jour (version " + Product.Version + ")."
+                             : _mode == Mode.Install ? "✓  " + Product.Name + " est installé. Pour lire une vidéo : clic droit › Ouvrir avec › " + Product.Name + "."
+                             : "✓  " + Product.Name + " " + Product.Version + " est installé.";
+                _install.Text = "Ouvrir une vidéo  →";   // lance le lecteur : fenêtre « Ouvrir » de Windows
                 _install.Enabled = true;
+                _busy = false;
                 _cancel.Text = "Fermer";
                 _cancel.Enabled = true;
                 if (_updateMode)
                 {
-                    _status.Text = "✓  Mise à jour " + Product.Version + " installée, relance de " + Product.Name + "…";
-                    await Task.Delay(900);
-                    OnInstall(this, EventArgs.Empty);   // _done = true -> lance l'appli et ferme
+                    // plus d'écran d'accueil à rouvrir : la prochaine vidéo s'ouvrira dans la nouvelle version
+                    _status.Text = "✓  " + Product.Name + " est à jour (version " + Product.Version + ").";
+                    await Task.Delay(2200);
+                    Close();
                 }
             }
             catch (Exception ex)
@@ -251,8 +350,40 @@ namespace KSHPLAYER.Setup
                 _status.ForeColor = Pink;
                 _status.Text = "Échec de l'installation : " + ex.Message;
                 _install.Text = "Réessayer";
-                _install.Enabled = _cancel.Enabled = true;
+                _install.Enabled = _cancel.Enabled = _desktop.Enabled = _openWith.Enabled = _apercu.Enabled = true;
+                _busy = false;
             }
+        }
+
+        private static async Task WaitForExitAsync(int pid, int ms)
+        {
+            try
+            {
+                using (var p = Process.GetProcessById(pid))
+                {
+                    var sw = Stopwatch.StartNew();
+                    while (!p.HasExited && sw.ElapsedMilliseconds < ms) await Task.Delay(200);
+                }
+            }
+            catch { /* déjà terminé */ }
+        }
+
+        /// <summary>
+        /// Attend que plus aucune vidéo ne soit ouverte, sans limite (la mise à jour ne coupe jamais une vidéo) ;
+        /// « Annuler » reste possible (elle sera proposée de nouveau à la prochaine fermeture). false si on a annulé.
+        /// </summary>
+        private async Task<bool> WaitNoPlayerAsync()
+        {
+            if (!Installer.IsAppRunning()) return true;
+            _status.Text = "Mise à jour prête : elle s'installe dès que " + Product.Name + " est fermé.";
+            _cancel.Enabled = true;
+            while (Installer.IsAppRunning())
+            {
+                await Task.Delay(500);
+                if (_closing || IsDisposed) return false;
+            }
+            _cancel.Enabled = false;
+            return true;
         }
 
         // ---------------- Déplacement de la fenêtre sans bordure ----------------
@@ -283,6 +414,9 @@ namespace KSHPLAYER.Setup
         private readonly float S;
         private float _offset;
         private float _contentHeight;
+
+        /// <summary>Carte mise en avant en tête de liste (titre, texte) : les nouveautés lors d'une mise à jour.</summary>
+        public string[] Highlight { get; set; }
 
         public FeatureView(float scale)
         {
@@ -316,9 +450,27 @@ namespace KSHPLAYER.Setup
             using (var red = new SolidBrush(SetupForm.Red))
             using (var pen = new Pen(SetupForm.Line, Math.Max(1, S)))
             {
+                float y = -_offset;
+                // carte « Nouveautés » sur toute la largeur, liseré rouge
+                if (Highlight != null)
+                {
+                    float fw = Width - 10 * S;
+                    var dh = g.MeasureString(Highlight[1], fD, (int)(fw - pad * 2 - 14 * S)).Height;
+                    var r = new RectangleF(0, y, fw, pad * 2 + 22 * S + dh);
+                    using (var path = SetupForm.Rounded(r, 16 * S))
+                    using (var redPen = new Pen(SetupForm.Red, Math.Max(1, S)))
+                    {
+                        g.FillPath(bS, path);
+                        g.DrawPath(redPen, path);
+                    }
+                    g.FillEllipse(red, pad, y + pad + 6 * S, 7 * S, 7 * S);
+                    g.DrawString(Highlight[0], fT, bT, pad + 14 * S, y + pad - 2 * S);
+                    g.DrawString(Highlight[1], fD, bD, new RectangleF(pad + 14 * S, y + pad + 22 * S, fw - pad * 2 - 14 * S, dh + 4 * S));
+                    y += r.Height + gap;
+                }
+
                 // hauteur de chaque ligne = carte la plus haute des deux colonnes
                 var feats = Product.Features;
-                float y = -_offset;
                 for (int i = 0; i < feats.Length; i += 2)
                 {
                     float rowH = 0;

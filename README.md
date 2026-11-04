@@ -5,8 +5,9 @@ Deux éditions : **KSHPLAYER** (tout le monde) et **KSHPLAYER PRO** (monteurs : 
 
 | Dossier | Contenu |
 |---|---|
-| `/` | Appli Windows (C# / WinUI 3) — `KSHPLAYER.sln` |
+| `/` | Lecteur Windows (C# / .NET Framework 4.8, sans écran d'accueil) — `KSHPLAYER.sln` |
 | `Setup/` | Installateur Windows (KSHPLAYER-Setup.exe / KSHPLAYER-PRO-Setup.exe) |
+| `Apercu/` | Aperçu des vidéos à la barre Espace dans l'Explorateur + désinstallateur (KSHPLAYER-Apercu.exe) |
 | `mpv/` | Partagé Windows + Mac : barre de contrôle `kshosc.lua`, icônes, raccourcis |
 | `macOS/` | Appli Mac (Swift / AppKit + MPVKit), compilée par GitHub Actions |
 

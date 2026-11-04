@@ -11,6 +11,7 @@ internal static class MpvNative
     public const int MPV_FORMAT_NONE = 0;
     public const int MPV_FORMAT_STRING = 1;
     public const int MPV_FORMAT_FLAG = 3;
+    public const int MPV_FORMAT_INT64 = 4;
     public const int MPV_FORMAT_DOUBLE = 5;
 
     public const int MPV_EVENT_NONE = 0;

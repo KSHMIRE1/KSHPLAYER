@@ -1,33 +1,32 @@
 using System;
+using System.Globalization;
+using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using static KSHPLAYER.Player.MpvNative;
 
 namespace KSHPLAYER.Player;
 
 /// <summary>
-/// Le moteur de KSHPLAYER : une instance libmpv qui dessine dans une fenêtre Win32 donnée.
+/// Le moteur de KSHPLAYER : une instance libmpv qui affiche la vidéo dans sa propre fenêtre sans bord,
+/// avec la barre de contrôle kshosc.lua. Depuis 1.2 il n'y a plus d'écran d'accueil : quand mpv s'arrête
+/// (croix, Échap, fin du film), KSHPLAYER se ferme.
 /// </summary>
 public sealed class MpvPlayer : IDisposable
 {
     private IntPtr _ctx;
-    private Thread? _eventThread;
+    private readonly object _gate = new object();   // commandes (fil principal, mise à jour) contre arrêt du moteur
+    private readonly Thread _eventThread;
+    private Thread? _closer;
     private volatile bool _disposed;
+    private bool _iconSet;
 
-    /// <summary>mpv demande (ou quitte) le plein écran, ex. double-clic ou touche F.</summary>
-    public event Action<bool>? FullscreenChanged;
-    /// <summary>Titre du média en cours.</summary>
-    public event Action<string>? TitleChanged;
-    /// <summary>Un fichier vient d'être chargé.</summary>
-    public event Action? FileLoaded;
-    /// <summary>mpv s'arrête (ex. touche Q).</summary>
+    /// <summary>mpv s'est arrêté : vidéo refermée ou fin du film.</summary>
     public event Action? Shutdown;
-    /// <summary>L'utilisateur a cliqué sur la croix : fermer toute l'appli, pas seulement la vidéo.</summary>
-    public bool ExitAppRequested { get; private set; }
 
-    private const ulong ObsFullscreen = 1;
-    private const ulong ObsTitle = 2;
-    private const ulong ObsExitApp = 3;
+    private const ulong ObsWindow = 1;
 
     public MpvPlayer(string configDir, HardwareProfile hw)
     {
@@ -40,10 +39,10 @@ public sealed class MpvPlayer : IDisposable
         Opt("config-dir", configDir);
         Opt("log-file", AppLog.MpvLogPath);   // journal mpv : %LOCALAPPDATA%\KSHPLAYER\mpv.log
         Opt("load-scripts", "no");            // on ne charge que notre barre de contrôle
-        Opt("scripts", System.IO.Path.Combine(configDir, "scripts", "kshosc.lua"));
+        Opt("scripts", Path.Combine(configDir, "scripts", "kshosc.lua"));
 
         // --- Fenêtre : uniquement la vidéo, sans bord ni barre de titre ---
-        Opt("title", "KSHPLAYER · ${media-title}");
+        Opt("title", Edition.Name + " · ${media-title}");
         Opt("border", "no");                  // pas de cadre Windows
         Opt("window-dragging", "yes");        // on déplace la fenêtre en glissant la vidéo
         Opt("keepaspect-window", "yes");      // la fenêtre épouse le format du film : pas de bandes noires
@@ -51,20 +50,19 @@ public sealed class MpvPlayer : IDisposable
         Opt("geometry", "50%:50%");           // centrée
         Opt("force-window", "immediate");
         Opt("keep-open", "no");
-        Opt("idle", "once");                  // attend le fichier, puis fin du film -> retour à l'accueil
+        Opt("idle", "once");                  // kshosc.lua passe à idle=yes et ferme lui-même en fin de film
 
         // --- Interface : barre de contrôle maison KSHPLAYER (kshosc.lua) ---
         Opt("osc", "no");
-        Opt("osd-bar", "no");
+        Opt("osd-bar", "yes");
         Opt("input-default-bindings", "yes");
         Opt("input-vo-keyboard", "yes");
         Opt("osd-font", "Segoe UI");
-        Opt("osd-bar", "yes");
 
-        // --- Rendu vidéo (RTX 3080 + écran HDR) ---
+        // --- Rendu vidéo (cartes graphiques NVIDIA / AMD / Intel, écrans HDR) ---
         Opt("vo", "gpu-next");                // moteur libplacebo, le meilleur de mpv
         Opt("gpu-api", "d3d11");
-        Opt("hwdec", "auto-safe");            // décodage par la carte graphique (NVIDIA, AMD, Intel)
+        Opt("hwdec", "auto-safe");            // décodage par la carte graphique
         Opt("target-colorspace-hint", "yes"); // envoie le signal HDR à l'écran pour les contenus HDR
         Opt("tone-mapping", "auto");
 
@@ -107,54 +105,78 @@ public sealed class MpvPlayer : IDisposable
             Opt("mf-fps", "24");            // cadence par défaut des séquences d'images
         }
 
+        // Diagnostic : options mpv en plus, ex. KSHPLAYER_MPV="hwdec=no,gpu-api=vulkan"
+        var extra = Environment.GetEnvironmentVariable("KSHPLAYER_MPV");
+        if (!string.IsNullOrWhiteSpace(extra))
+            foreach (var kv in extra!.Split(','))
+            {
+                int eq = kv.IndexOf('=');
+                if (eq > 0) Opt(kv.Substring(0, eq).Trim(), kv.Substring(eq + 1).Trim());
+            }
+
         Check(mpv_initialize(_ctx), "initialisation");
+        mpv_observe_property(_ctx, ObsWindow, "window-id", MPV_FORMAT_INT64);
 
-        mpv_observe_property(_ctx, ObsFullscreen, "fullscreen", MPV_FORMAT_FLAG);
-        mpv_observe_property(_ctx, ObsTitle, "media-title", MPV_FORMAT_STRING);
-        mpv_observe_property(_ctx, ObsExitApp, "user-data/kshosc/exit-app", MPV_FORMAT_STRING);
-
-        _eventThread = new Thread(EventLoop) { IsBackground = true, Name = "mpv-events" };
+        IntPtr handle = _ctx;   // copie : Dispose remet _ctx à zéro sans attendre le fil d'événements
+        _eventThread = new Thread(() => EventLoop(handle)) { IsBackground = true, Name = "mpv-events" };
         _eventThread.Start();
     }
 
-    public void Load(string path)
+    /// <param name="start">Position de départ en secondes (« ouvrir en grand » depuis l'aperçu Espace).</param>
+    public void Load(string path, double? start = null)
     {
         // Le titre affiché = le nom du fichier tel que tu l'as nommé, pas le titre caché dans le MKV
-        SetProperty("force-media-title", System.IO.Path.GetFileNameWithoutExtension(path));
-        Command("loadfile", path, "replace");
+        SetProperty("force-media-title", Path.GetFileNameWithoutExtension(path));
+        if (start is > 0.5)
+            Command("loadfile", path, "replace", "-1",
+                "start=" + start.Value.ToString("0.###", CultureInfo.InvariantCulture));
+        else
+            Command("loadfile", path, "replace");
     }
 
-    /// <summary>Séquence d'images (EXR, DPX, TIFF, PNG…) : tout un dossier lu comme une vidéo.</summary>
-    public void LoadSequence(string folder, string extension)
+    /// <summary>
+    /// Séquence d'images (EXR, DPX, TIFF, PNG…) lue comme une vidéo : tout le dossier (prefix vide)
+    /// ou seulement les images qui commencent par <paramref name="prefix"/> (ex. « plan_010_ » pour plan_010_0001.exr).
+    /// </summary>
+    public void LoadSequence(string folder, string extension, string prefix = "")
     {
-        SetProperty("force-media-title", System.IO.Path.GetFileName(folder.TrimEnd('\\', '/')) + "  ·  séquence " + extension.ToUpperInvariant());
-        Command("loadfile", "mf://" + System.IO.Path.Combine(folder, "*." + extension), "replace");
+        SetProperty("force-media-title", Path.GetFileName(folder.TrimEnd('\\', '/')) +
+            (prefix.Length > 0 ? " · " + prefix.TrimEnd('_', '-', '.', ' ') : "") + "  ·  séquence " + extension.ToUpperInvariant());
+        Command("loadfile", "mf://" + Path.Combine(folder, prefix + "*." + extension), "replace");
     }
+
+    /// <summary>Petit message KSHFLIX dans la vidéo, sous la rangée du haut (kshosc.lua).</summary>
+    public void Toast(string text, int seconds) =>
+        Command("script-message-to", "kshosc", "ksh-toast", text, seconds.ToString(CultureInfo.InvariantCulture));
 
     // Valeur protégée pour les listes d'options mpv (%longueur%texte)
-    private static string Quote(string v) => $"%{System.Text.Encoding.UTF8.GetByteCount(v)}%{v}";
+    private static string Quote(string v) => $"%{Encoding.UTF8.GetByteCount(v)}%{v}";
 
-    public void SetProperty(string name, string value) => mpv_set_property_string(_ctx, name, value);
-
-    public string? GetProperty(string name)
+    public void SetProperty(string name, string value)
     {
-        var ptr = mpv_get_property_string(_ctx, name);
-        if (ptr == IntPtr.Zero) return null;
-        var s = Marshal.PtrToStringUTF8(ptr);
-        mpv_free(ptr);
-        return s;
+        lock (_gate)
+        {
+            if (_ctx != IntPtr.Zero) mpv_set_property_string(_ctx, name, value);
+        }
     }
 
     public void Command(params string[] args)
     {
+        lock (_gate) CommandLocked(args);
+    }
+
+    private void CommandLocked(string[] args)
+    {
         if (_ctx == IntPtr.Zero) return;
-        var ptrs = new IntPtr[args.Length + 1];
+        var ptrs = new IntPtr[args.Length + 1];   // la dernière case reste à zéro : fin de liste pour mpv
         try
         {
             for (int i = 0; i < args.Length; i++)
-                ptrs[i] = Marshal.StringToCoTaskMemUTF8(args[i]);
-            ptrs[args.Length] = IntPtr.Zero;
-
+            {
+                var bytes = Encoding.UTF8.GetBytes(args[i] + "\0");
+                ptrs[i] = Marshal.AllocHGlobal(bytes.Length);
+                Marshal.Copy(bytes, 0, ptrs[i], bytes.Length);
+            }
             var arr = Marshal.AllocHGlobal(IntPtr.Size * ptrs.Length);
             try
             {
@@ -166,38 +188,36 @@ public sealed class MpvPlayer : IDisposable
         finally
         {
             foreach (var p in ptrs)
-                if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p);
+                if (p != IntPtr.Zero) Marshal.FreeHGlobal(p);
         }
     }
 
-    private void EventLoop()
+    private void EventLoop(IntPtr ctx)
     {
         while (!_disposed)
         {
-            var evPtr = mpv_wait_event(_ctx, -1);
+            var evPtr = mpv_wait_event(ctx, -1);
             if (evPtr == IntPtr.Zero) continue;
-            var ev = Marshal.PtrToStructure<MpvEvent>(evPtr);
+            var ev = (MpvEvent)Marshal.PtrToStructure(evPtr, typeof(MpvEvent));
 
-            switch (ev.EventId)
+            if (ev.EventId == MPV_EVENT_SHUTDOWN)
             {
-                case MPV_EVENT_SHUTDOWN:
-                    if (!_disposed) Shutdown?.Invoke();
-                    return;
-
-                case MPV_EVENT_FILE_LOADED:
-                    FileLoaded?.Invoke();
-                    break;
-
-                case MPV_EVENT_PROPERTY_CHANGE:
-                    var prop = Marshal.PtrToStructure<MpvEventProperty>(ev.Data);
-                    if (prop.Data == IntPtr.Zero) break;
-                    if (ev.ReplyUserdata == ObsFullscreen && prop.Format == MPV_FORMAT_FLAG)
-                        FullscreenChanged?.Invoke(Marshal.ReadInt32(prop.Data) != 0);
-                    else if (ev.ReplyUserdata == ObsExitApp && prop.Format == MPV_FORMAT_STRING)
-                        ExitAppRequested = Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(prop.Data)) == "yes";
-                    else if (ev.ReplyUserdata == ObsTitle && prop.Format == MPV_FORMAT_STRING)
-                        TitleChanged?.Invoke(Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(prop.Data)) ?? "");
-                    break;
+                if (!_disposed)
+                {
+                    try { Shutdown?.Invoke(); } catch (Exception ex) { AppLog.Write("Fermeture du lecteur", ex); }
+                }
+                return;
+            }
+            if (ev.EventId != MPV_EVENT_PROPERTY_CHANGE || ev.Data == IntPtr.Zero) continue;
+            var prop = (MpvEventProperty)Marshal.PtrToStructure(ev.Data, typeof(MpvEventProperty));
+            if (ev.ReplyUserdata == ObsWindow && prop.Format == MPV_FORMAT_INT64 && prop.Data != IntPtr.Zero)
+            {
+                long id = Marshal.ReadInt64(prop.Data);
+                if (id != 0 && !_iconSet)
+                {
+                    _iconSet = true;
+                    WindowIcon.Apply(new IntPtr(id));   // l'icône KSHPLAYER dans la barre des tâches (pas celle de mpv)
+                }
             }
         }
     }
@@ -207,17 +227,71 @@ public sealed class MpvPlayer : IDisposable
     private static void Check(int code, string what)
     {
         if (code < 0)
-            throw new InvalidOperationException(
-                $"mpv ({what}) : {Marshal.PtrToStringUTF8(mpv_error_string(code))}");
+            throw new InvalidOperationException($"mpv ({what}) : {Utf8(mpv_error_string(code))}");
     }
 
+    private static string Utf8(IntPtr p)
+    {
+        if (p == IntPtr.Zero) return "";
+        int len = 0;
+        while (Marshal.ReadByte(p, len) != 0) len++;
+        var buf = new byte[len];
+        Marshal.Copy(p, buf, 0, len);
+        return Encoding.UTF8.GetString(buf);
+    }
+
+    /// <summary>
+    /// Arrête le moteur sur un fil à part, sans attendre. Jamais sur le fil principal : en se détruisant,
+    /// libmpv appelle CoUninitialize() sur le fil qui le détruit (sortie audio WASAPI). Avec l'ancien accueil
+    /// WinUI, chaque vidéo refermée retirait ainsi une inscription COM/WinRT à l'interface (croix qui ne
+    /// répondait plus) ; l'aperçu Espace, lui, perdait l'Explorateur.
+    /// </summary>
     public void Dispose()
     {
-        if (_disposed || _ctx == IntPtr.Zero) return;
-        _disposed = true;
-        mpv_wakeup(_ctx);
-        _eventThread?.Join(1000);
-        mpv_terminate_destroy(_ctx);
-        _ctx = IntPtr.Zero;
+        IntPtr ctx;
+        lock (_gate)
+        {
+            if (_disposed || _ctx == IntPtr.Zero) return;
+            _disposed = true;
+            ctx = _ctx;
+            _ctx = IntPtr.Zero;     // plus aucune commande vers ce moteur (le message de mise à jour arrive d'un autre fil)
+        }
+        var events = _eventThread;
+        _closer = new Thread(() =>
+        {
+            try
+            {
+                mpv_wakeup(ctx);
+                events.Join(1000);
+                mpv_terminate_destroy(ctx);
+            }
+            catch (Exception ex) { AppLog.Write("Arrêt du moteur", ex); }
+        }) { IsBackground = true, Name = "mpv-arret" };
+        _closer.Start();
+    }
+
+    /// <summary>Attend que le moteur soit complètement arrêté.</summary>
+    public void WaitClosed(int milliseconds) => _closer?.Join(milliseconds);
+}
+
+/// <summary>Met l'icône de KSHPLAYER sur la fenêtre de mpv (sinon Windows affiche celle de mpv).</summary>
+internal static class WindowIcon
+{
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint ExtractIconEx(string file, int index, out IntPtr large, out IntPtr small, uint count);
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    private const uint WM_SETICON = 0x0080;
+
+    public static void Apply(IntPtr hwnd)
+    {
+        try
+        {
+            var exe = Assembly.GetEntryAssembly()?.Location;
+            if (string.IsNullOrEmpty(exe) || ExtractIconEx(exe!, 0, out var big, out var small, 1) == 0) return;
+            if (big != IntPtr.Zero) PostMessage(hwnd, WM_SETICON, (IntPtr)1, big);     // ICON_BIG
+            if (small != IntPtr.Zero) PostMessage(hwnd, WM_SETICON, IntPtr.Zero, small); // ICON_SMALL
+        }
+        catch { /* une icône manquante ne doit jamais gêner la lecture */ }
     }
 }

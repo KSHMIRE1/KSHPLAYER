@@ -11,9 +11,9 @@ public enum QualityTier { Light, Balanced, Max }
 /// </summary>
 public sealed class HardwareProfile
 {
-    public string GpuName { get; private init; } = "Carte graphique inconnue";
-    public long DedicatedVramMb { get; private init; }
-    public QualityTier Tier { get; private init; } = QualityTier.Balanced;
+    public string GpuName { get; private set; } = "Carte graphique inconnue";
+    public long DedicatedVramMb { get; private set; }
+    public QualityTier Tier { get; private set; } = QualityTier.Balanced;
 
     public string Label => Tier switch
     {

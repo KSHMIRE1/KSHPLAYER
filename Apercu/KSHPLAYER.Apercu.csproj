@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    KSHPLAYER-Apercu.exe / KSHPLAYERPRO-Apercu.exe : petit programme installé à côté du lecteur.
+      - Aperçu à la barre Espace dans l'Explorateur et sur le Bureau (idée d'Orbit Look), lancé avec Windows.
+        Il utilise le moteur du lecteur (libmpv-2.dll) et sa barre kshosc.lua en mode « aperçu ».
+      - Désinstallateur de KSHPLAYER (/uninstall, /uninstall /S).
+    .NET Framework 4.8 = déjà présent sur Windows 10/11 : quelques centaines de Ko, démarrage instantané.
+    Compilé et glissé dans l'installateur automatiquement par Setup/KSHPLAYER.Setup.csproj (rien à faire à la main).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Configurations>Debug;Release;DebugPro;ReleasePro</Configurations>
+    <RootNamespace>KSHPLAYER.Apercu</RootNamespace>
+    <AssemblyName>KSHPLAYER-Apercu</AssemblyName>
+    <ApplicationIcon>..\Assets\KSHPLAYER.ico</ApplicationIcon>
+    <ApplicationManifest>apercu.manifest</ApplicationManifest>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\VERSION').Trim())</Version>
+    <Product>KSHPLAYER</Product>
+    <Company>KSHMIRE</Company>
+  </PropertyGroup>
+
+  <!-- Édition PRO : même code, autre nom (KSHPLAYERPRO-Apercu.exe) et symbole KSHPRO -->
+  <PropertyGroup Condition="'$(Configuration)' == 'DebugPro' Or '$(Configuration)' == 'ReleasePro'">
+    <DefineConstants>$(DefineConstants);KSHPRO</DefineConstants>
+    <AssemblyName>KSHPLAYERPRO-Apercu</AssemblyName>
+    <Product>KSHPLAYER PRO</Product>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'ReleasePro'">
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <!-- Partagé avec l'installateur : noms, chemins, registre, couleurs KSHFLIX -->
+    <Compile Include="..\Setup\Product.cs" Link="Partage\Product.cs" />
+    <Compile Include="..\Setup\Installer.cs" Link="Partage\Installer.cs" />
+    <Compile Include="..\Setup\SetupForm.cs" Link="Partage\SetupForm.cs" />
+    <EmbeddedResource Include="..\Assets\logo-mark.png" LogicalName="logo.png" />
+    <EmbeddedResource Include="..\Assets\KSHPLAYER.ico" LogicalName="app.ico" />
+  </ItemGroup>
+</Project>

@@ -1,29 +1,36 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Le lecteur Windows : KSHPLAYER.exe (configurations Debug / Release) et KSHPLAYERPRO.exe (DebugPro / ReleasePro).
+    Depuis 1.2, plus d'écran d'accueil : un fichier ouvert (double-clic, « Ouvrir avec », Entrée dans l'aperçu Espace)
+    s'affiche tout de suite dans la fenêtre sans bord de mpv, et fermer la vidéo ferme KSHPLAYER. Lancé sans fichier,
+    il propose la fenêtre « Ouvrir » de Windows.
+    Sans écran à dessiner, WinUI ne servait plus à rien : .NET Framework 4.8 (déjà dans Windows 10 / 11), un exe de
+    quelques dizaines de Ko, démarrage plus rapide, installateur environ 3 fois plus léger.
+  -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>KSHPLAYER</RootNamespace>
-    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Version>
     <AssemblyName>KSHPLAYER</AssemblyName>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Version>
+    <Product>KSHPLAYER</Product>
+    <Company>KSHMIRE</Company>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\KSHPLAYER.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
     <Configurations>Debug;Release;DebugPro;ReleasePro</Configurations>
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <UseWinUI>true</UseWinUI>
-    <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <SatelliteResourceLanguages>fr;en</SatelliteResourceLanguages>
-    <WindowsPackageType>None</WindowsPackageType>
-    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <EnableMsixTooling>true</EnableMsixTooling>
   </PropertyGroup>
 
   <!-- Édition PRO (monteurs) : configurations DebugPro / ReleasePro -->
   <PropertyGroup Condition="'$(Configuration)' == 'DebugPro' Or '$(Configuration)' == 'ReleasePro'">
     <DefineConstants>$(DefineConstants);KSHPRO</DefineConstants>
     <AssemblyName>KSHPLAYERPRO</AssemblyName>
+    <Product>KSHPLAYER PRO</Product>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'DebugPro'">
     <DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
@@ -31,10 +38,8 @@
     <DebugType>portable</DebugType>
     <Optimize>false</Optimize>
   </PropertyGroup>
-
-  <!-- Release : .NET embarqué, l'appli tourne sur n'importe quel PC Windows 64 bits sans rien installer -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'ReleasePro'">
-    <SelfContained>true</SelfContained>
+    <DebugType>none</DebugType>
     <Optimize>true</Optimize>
   </PropertyGroup>
 
@@ -56,28 +61,29 @@
   </Target>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="engine\libmpv-2.dll" Link="libmpv-2.dll" CopyToOutputDirectory="Always" />
-    <!-- Barre de contrôle KSHPLAYER, police d'icônes (Material Icons, Apache 2.0) et raccourcis -->
+    <!-- Barre de contrôle KSHPLAYER, polices (icônes Material Icons, Apache 2.0 ; Unbounded, OFL) et raccourcis -->
     <None Update="mpv\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="mpv\scripts\uosc\**\*;mpv\script-opts\**\*;mpv\fonts\uosc_textures.ttf" CopyToOutputDirectory="Never" />
     <None Remove="libmpv-2.dll" />
-    <!-- le projet d'installateur vit dans Setup\ : on l'exclut du lecteur -->
+    <!-- l'installateur (Setup\) et l'aperçu Espace (Apercu\) sont des projets à part : exclus du lecteur -->
     <Compile Remove="Setup\**" />
+    <Compile Remove="Apercu\**" />
+    <None Remove="Apercu\**" />
+    <EmbeddedResource Remove="Apercu\**" />
     <None Remove="macOS\**" />
     <None Remove="third_party\**" />
     <None Remove="Setup\**" />
     <EmbeddedResource Remove="Setup\**" />
-    <!-- Identité KSHFLIX : logo, icône, police Unbounded (OFL) -->
+    <!-- l'icône est dans l'exe ; logo et police servent à l'installateur (Setup\) et au Mac -->
     <None Remove="Assets\**" />
-    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Kit Windows App SDK sans les modules IA / ML / Widgets (≈ 50 Mo inutiles pour un lecteur vidéo) -->
-    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
-    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="1.8.260803002" />
-    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" Version="1.8.25122902" />
-    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="1.8.260921001" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.*" />
+    <!-- anciens fichiers de l'accueil WinUI (jusqu'en 1.1.x) : ignorés s'il en reste dans une copie du projet -->
+    <Compile Remove="App.xaml.cs;MainWindow.xaml.cs" />
+    <None Remove="App.xaml;MainWindow.xaml" />
   </ItemGroup>
 </Project>

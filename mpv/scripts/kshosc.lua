@@ -6,10 +6,13 @@ local mp = require 'mp'
 local utils = require 'mp.utils'
 
 -- Options passées par l'appli (édition PRO, dossiers LUT / captures)
-local opts = { pro = false, lutdir = '', shotdir = '', platform = 'windows', font = '' }
+--   apercu = fenêtre d'aperçu ouverte par la barre Espace (KSHPLAYER-Apercu.exe, Windows)
+--   appexe = chemin de KSHPLAYER.exe, pour « ouvrir en grand » depuis l'aperçu
+local opts = { pro = false, lutdir = '', shotdir = '', platform = 'windows', font = '', apercu = false, appexe = '' }
 require('mp.options').read_options(opts, 'kshosc')
 local PRO = opts.pro
 local MAC = opts.platform == 'mac'
+local APERCU = opts.apercu
 
 -- ---------- Apparence ----------
 local ACCENT     = '3A28F0'   -- rouge KSHFLIX #F0283A (couleurs ASS en BGR)
@@ -34,6 +37,14 @@ local menu = nil              -- { kind = 'sub'|'audio', items = {...}, anchor_x
 local dragging = false
 local bindings_on = false
 local cleared = true
+local late = {}               -- infobulles : dessinées en dernier, par-dessus tout le reste
+local toast = nil             -- message passager envoyé par l'appli (ex. mise à jour prête) : { text, t0, t1 }
+
+-- Vidéo précédente / suivante (même dossier) et fiche « lecture impossible »
+local nav = { dir = nil, kind = nil, list = nil, idx = nil, path = nil, prev = nil, next = nil, scanned = -1e9 }
+local err = nil               -- { path, name, reason, detail, icon } quand un fichier ne se lit pas
+local last_path = nil         -- dernier fichier demandé (mpv l'oublie quand le chargement échoue)
+local played_something = false
 
 -- PRO
 local info_on = false
@@ -120,6 +131,269 @@ local function fmt_main(t, with_offset)
 end
 
 local function inside(r, x, y) return x >= r.x1 and x <= r.x2 and y >= r.y1 and y <= r.y2 end
+
+-- ---------- Texte : UTF-8, mesure exacte, coupe au milieu, retour à la ligne ----------
+local function utf8_chars(s)
+    local t = {}
+    for ch in tostring(s or ''):gmatch('[%z\1-\127\194-\244][\128-\191]*') do t[#t + 1] = ch end
+    return t
+end
+
+-- largeur réelle d'un texte (mesurée par libass, mise en cache) ; estimation si mpv ne sait pas mesurer.
+-- libass ajoute une petite marge fixe autour de ce qu'il mesure : on mesure « texte » et « textetexte »,
+-- la différence donne la largeur exacte.
+local meas = mp.create_osd_overlay('ass-events')
+meas.hidden, meas.compute_bounds = true, true
+local meas_cache, meas_count = {}, 0
+local function bounds_w(s, size, font)
+    meas.res_x, meas.res_y = W, H
+    meas.data = string.format('{\\an7\\pos(0,0)\\fn%s\\fs%s\\bord0\\shad0\\blur0}%s', font, n(size), esc(s))
+    local ok, r = pcall(function() return meas:update() end)
+    if ok and type(r) == 'table' and r.x1 and r.x0 then return r.x1 - r.x0 end
+    return nil
+end
+local function text_w(s, size, font)
+    font = font or TEXT_FONT
+    local key = font .. '|' .. n(size) .. '|' .. s
+    local c = meas_cache[key]
+    if c then return c end
+    local w = nil
+    if W > 0 and H > 0 and s ~= '' then
+        local one, two = bounds_w(s, size, font), bounds_w(s .. s, size, font)
+        if one and two and two > one then w = two - one end
+    end
+    w = w or (#utf8_chars(s) * size * 0.56)
+    if meas_count > 600 then meas_cache, meas_count = {}, 0 end
+    meas_cache[key], meas_count = w, meas_count + 1
+    return w
+end
+
+-- « Un nom de fichier bien trop long pour la place.mkv » → « Un nom de fichier bi…la place.mkv »
+local ell_cache = {}
+local function ellipsize_middle(s, maxw, size, font)
+    s = tostring(s or '')
+    local key = s .. '|' .. n(maxw) .. '|' .. n(size) .. '|' .. (font or '')
+    if ell_cache[key] then return ell_cache[key] end
+    local out = s
+    if text_w(s, size, font) > maxw then
+        local ch = utf8_chars(s)
+        out = '…'
+        local lo, hi = 1, #ch - 1
+        while lo <= hi do
+            local k = math.floor((lo + hi) / 2)
+            local a = math.ceil(k * 0.55)
+            local b = k - a
+            local cand = table.concat(ch, '', 1, a) .. '…' .. (b > 0 and table.concat(ch, '', #ch - b + 1, #ch) or '')
+            if text_w(cand, size, font) <= maxw then out = cand; lo = k + 1 else hi = k - 1 end
+        end
+    end
+    ell_cache[key] = out
+    return out
+end
+
+-- coupe un texte en lignes qui tiennent dans maxw (au plus max_lines, la dernière finit par « … »)
+local function wrap(s, maxw, size, max_lines)
+    local lines, cur = {}, ''
+    for word in tostring(s or ''):gmatch('%S+') do
+        local cand = cur == '' and word or (cur .. ' ' .. word)
+        if cur ~= '' and text_w(cand, size) > maxw then
+            lines[#lines + 1] = cur
+            cur = word
+        else
+            cur = cand
+        end
+    end
+    if cur ~= '' then lines[#lines + 1] = cur end
+    if max_lines and #lines > max_lines then
+        local keep = {}
+        for i = 1, max_lines do keep[i] = lines[i] end
+        keep[max_lines] = ellipsize_middle(keep[max_lines] .. ' …', maxw, size)
+        lines = keep
+    end
+    return lines
+end
+
+-- petite étiquette flottante (au-dessus d'un bouton), toujours entière dans la fenêtre
+local function tooltip(x, y, label, s, f)
+    local size = 12.5 * s
+    label = ellipsize_middle(label, math.min(460 * s, W - 48 * s), size)
+    local w = text_w(label, size) + 28 * s
+    local h = 28 * s
+    local tx = math.max(8 * s, math.min(x - w / 2, W - w - 8 * s))
+    late[#late + 1] = rrect(tx - 1 * s, y - h / 2 - 1 * s, w + 2 * s, h + 2 * s, 14 * s, BORDER, 1, f)
+    late[#late + 1] = rrect(tx, y - h / 2, w, h, 14 * s, PANEL, 1, f)
+    late[#late + 1] = text(tx + w / 2, y, 5, label, size, WHITE, 0.95, f)
+end
+
+-- ---------- Vidéos du même dossier (← → d'Orbit Look, ici Pg préc. / Pg suiv.) ----------
+local function set_of(list) local t = {} for _, e in ipairs(list) do t[e] = true end return t end
+local VIDEO_EXT = set_of({ 'mkv', 'mk3d', 'mp4', 'm4v', 'mov', 'qt', 'avi', 'divx', 'xvid', 'wmv', 'asf', 'webm', 'ts', 'm2ts',
+    'mts', 'm2t', 'trp', 'tp', 'mpg', 'mpeg', 'mpe', 'm2v', 'm1v', 'vob', 'evo', 'flv', 'f4v', 'ogv', 'ogm', '3gp', '3g2', 'rm',
+    'rmvb', 'mxf', 'gxf', 'y4m', 'dv', 'nut', 'hevc', 'h264', 'h265', '264', '265', 'avc', 'ivf', 'wtv', 'dvr-ms', 'amv', 'mjpeg',
+    'mjpg', 'bik', 'braw', 'r3d', 'ari', 'arx', 'crm', 'nev' })
+local AUDIO_EXT = set_of({ 'mp3', 'flac', 'wav', 'm4a', 'm4b', 'aac', 'ogg', 'oga', 'opus', 'wma', 'alac', 'ape', 'aiff', 'aif',
+    'aifc', 'dts', 'dtshd', 'ac3', 'eac3', 'ec3', 'mka', 'thd', 'truehd', 'mlp', 'wv', 'dsf', 'dff', 'mpc', 'tta', 'caf', 'w64',
+    'spx', 'amr', 'au' })
+
+local function ext_of(name) return ((tostring(name or '')):match('%.([^%.\\/]+)$') or ''):lower() end
+local function strip_ext(name) return (tostring(name or ''):gsub('%.[^%.\\/]+$', '')) end
+local function base_name(p) return select(2, utils.split_path(p or '')) or '' end
+local function kind_of(name)
+    local e = ext_of(name)
+    if VIDEO_EXT[e] then return 'video' elseif AUDIO_EXT[e] then return 'audio' end
+    return nil
+end
+
+-- fichier local (pas un flux, ni une séquence mf://), en chemin complet
+local function local_path(p)
+    if not p or p == '' or p:find('^%a[%w+.-]+://') then return nil end
+    return utils.join_path(mp.get_property('working-directory', ''), p)
+end
+
+-- tri « comme l'Explorateur » : Episode 2 avant Episode 10
+local function nat_key(s)
+    local key = {}
+    for txt, num in s:lower():gmatch('(%D*)(%d*)') do
+        if txt ~= '' then key[#key + 1] = txt end
+        if num ~= '' then key[#key + 1] = tonumber(num) or num end
+    end
+    return key
+end
+local function nat_less(a, b)
+    local ka, kb = a.key, b.key
+    for i = 1, math.max(#ka, #kb) do
+        local x, y = ka[i], kb[i]
+        if x == nil then return true end
+        if y == nil then return false end
+        if x ~= y then
+            local tx, ty = type(x), type(y)
+            if tx == ty then return x < y end
+            return tx == 'number'
+        end
+    end
+    return a.name < b.name
+end
+
+local function scan_neighbors(force)
+    -- last_path : après un échec de chargement, mpv n'a plus de « path »
+    local p = local_path(last_path or mp.get_property('path', ''))
+    if not p then nav.list, nav.prev, nav.next, nav.path = nil, nil, nil, nil; return end
+    local dir, name = utils.split_path(p)
+    local kind = kind_of(name) or 'video'
+    if force or nav.dir ~= dir or nav.kind ~= kind or not nav.list or mp.get_time() - nav.scanned > 30 then
+        local list = {}
+        for _, f in ipairs(utils.readdir(dir, 'files') or {}) do
+            -- « ._fichier » : métadonnées laissées par macOS sur les disques externes
+            if f:sub(1, 2) ~= '._' and kind_of(f) == kind then list[#list + 1] = { name = f, key = nat_key(f) } end
+        end
+        table.sort(list, nat_less)
+        nav.dir, nav.kind, nav.list, nav.scanned = dir, kind, list, mp.get_time()
+    end
+    nav.path, nav.idx = p, nil
+    local lname = name:lower()
+    for i, it in ipairs(nav.list) do
+        if it.name:lower() == lname then nav.idx = i; break end
+    end
+    local function at(i) return nav.list[i] and utils.join_path(nav.dir, nav.list[i].name) or nil end
+    if nav.idx then
+        nav.prev, nav.next = at(nav.idx - 1), at(nav.idx + 1)
+    else
+        -- fichier hors liste (extension inconnue) : on le place dans l'ordre du dossier
+        local me = { name = name, key = nat_key(name) }
+        nav.prev, nav.next = nil, nil
+        for i, it in ipairs(nav.list) do
+            if nat_less(it, me) then nav.prev = at(i) elseif not nav.next and nat_less(me, it) then nav.next = at(i) end
+        end
+    end
+end
+
+local function has_neighbors() return nav.list ~= nil and (nav.prev ~= nil or nav.next ~= nil) end
+
+local function go_neighbor(dir)
+    scan_neighbors(false)
+    local target = dir < 0 and nav.prev or nav.next
+    if not target then
+        if has_neighbors() then mp.osd_message(dir < 0 and 'Première vidéo du dossier' or 'Dernière vidéo du dossier', 1.2) end
+        return
+    end
+    mp.commandv('loadfile', target, 'replace')   -- le titre suit tout seul (voir « start-file »)
+end
+
+local function chapter_step(dir)
+    if (mp.get_property_number('chapters', 0) or 0) > 0 then mp.commandv('add', 'chapter', tostring(dir))
+    else mp.osd_message('Pas de chapitres dans cette vidéo', 1.2) end
+end
+
+-- « Afficher dans le dossier » : l'Explorateur (ou le Finder) s'ouvre avec le fichier sélectionné
+local function reveal(p)
+    p = p and local_path(p)
+    if not p then return end
+    -- Windows : « /select, » et le chemin en deux morceaux, sinon un chemin avec des espaces ouvre le mauvais dossier
+    local win = p:gsub('/', '\\')
+    local args = MAC and { 'open', '-R', p } or { 'explorer.exe', '/select,', win }
+    mp.command_native_async({ name = 'subprocess', playback_only = false, detach = true, args = args }, function() end)
+end
+
+-- ---------- Fiche « lecture impossible » : la raison en clair au lieu d'un retour muet à l'accueil ----------
+local RAW_FORMATS = { braw = 'Blackmagic RAW', r3d = 'RED RAW', ari = 'ARRIRAW', arx = 'ARRIRAW',
+                      crm = 'Canon Cinema RAW Light', nev = 'Nikon N-RAW' }
+local PARTIAL_EXT = set_of({ 'part', 'crdownload', 'download', 'partial', '!qb', '!ut', 'opdownload', 'tmp' })
+local NOT_MEDIA_EXT = set_of({ 'txt', 'nfo', 'srt', 'ass', 'ssa', 'sub', 'idx', 'vtt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
+    'rar', '7z', 'exe', 'msi', 'lnk', 'url', 'html', 'htm', 'json', 'xml', 'ini', 'torrent', 'iso', 'cube', 'lut', 'psd', 'aep',
+    'prproj', 'drp', 'c4d', 'blend' })
+
+local function explain_error(e)
+    local p = last_path or mp.get_property('path', '') or ''
+    local name = p:find('^mf://') and (mp.get_property('media-title', '') or p) or base_name(p)
+    local ext = ext_of(name)
+    local tech = tostring(e.file_error or e.error or '')
+    if tech == 'nil' then tech = '' end
+    local lp = local_path(p)
+    local fi = lp and utils.file_info(lp) or nil
+    local reason, icon = nil, 'videocam_off'
+    if p == '' then
+        reason = 'Ce fichier ne peut pas être lu.'
+    elseif not lp then
+        if p:find('^mf://') then
+            reason = 'Les images de cette séquence ne peuvent pas être lues (format inconnu ou images abîmées).'
+        else
+            reason = 'Le flux ne répond pas, ou le lien n\'est plus valide.'; icon = 'link_off'
+        end
+    elseif not fi then
+        reason = 'Fichier introuvable : il a été déplacé ou supprimé, ou le disque n\'est plus branché.'; icon = 'search_off'
+    elseif fi.size == 0 then
+        reason = 'Ce fichier est vide (0 octet) : la copie ou le téléchargement ne sont pas allés au bout.'
+    elseif PARTIAL_EXT[ext] then
+        reason = 'Téléchargement pas terminé : ce fichier est encore incomplet.'; icon = 'downloading'
+    elseif RAW_FORMATS[ext] then
+        reason = 'Format ' .. RAW_FORMATS[ext] .. ' (.' .. ext .. ') : pas encore pris en charge par KSHPLAYER.'
+    elseif NOT_MEDIA_EXT[ext] then
+        reason = 'Ce n\'est pas une vidéo : c\'est un fichier .' .. ext .. '.'; icon = 'insert_drive_file'
+    elseif tech:find('unrecognized') or tech:find('recognize') then
+        reason = 'Format non reconnu : le fichier est abîmé, ou ce n\'est pas une vidéo.'
+    elseif tech:find('no audio or video') then
+        reason = 'Aucune image ni aucun son lisible : le fichier est abîmé ou utilise un codec inconnu.'
+    elseif tech:find('loading failed') then
+        reason = 'Impossible d\'ouvrir le fichier : accès refusé, ou fichier abîmé.'
+    else
+        reason = 'Ce fichier ne peut pas être lu.'
+    end
+    return { path = lp, exists = fi ~= nil, name = name, reason = reason, icon = icon,
+             detail = tech ~= '' and ('Détail technique : ' .. tech) or nil }
+end
+
+-- Fermer après une erreur (ou l'aperçu) : KSHPLAYER se ferme (Mac : retour à son écran), l'aperçu se referme
+local function close_player() mp.commandv('quit') end
+
+-- Aperçu : « ouvrir en grand » dans KSHPLAYER, au même endroit de la vidéo
+local function open_full()
+    local p = local_path(last_path or mp.get_property('path', ''))
+    if not p or opts.appexe == '' then return end
+    local pos = mp.get_property_number('time-pos', 0) or 0
+    mp.command_native_async({ name = 'subprocess', playback_only = false, detach = true,
+        args = { opts.appexe, p, string.format('--start=%.3f', pos) } }, function() end)
+    mp.add_timeout(0.15, close_player)
+end
 
 -- ---------- Pistes audio / sous-titres ----------
 local function track_label(t)
@@ -571,6 +845,86 @@ local function render_guides(ass, s)
     end
 end
 
+-- Fiche « lecture impossible » (carte KSHFLIX au centre de la fenêtre)
+local function render_error(ass, s)
+    local e = err
+    local cw = math.min(600 * s, W - 24 * s)
+    local pad = (cw < 420 * s) and 20 * s or 30 * s
+    local inner = cw - pad * 2
+    local rsize = 14.5 * s
+    local lines = wrap(e.reason, inner, rsize, 3)
+    local detail = e.detail and ellipsize_middle(e.detail, inner, 11.5 * s) or nil
+    local bh = 40 * s
+    local ch = pad + 54 * s + 20 * s + #lines * 21 * s + (detail and 22 * s or 0) + 24 * s + bh + pad
+    local x0 = (W - cw) / 2
+    local y0 = math.max(8 * s, (H - ch) / 2)
+
+    -- fond « salle obscure » (#050506) : pas de dernière image figée derrière la fiche
+    ass[#ass + 1] = rrect(0, 0, W, H, 0, '060505', 1, 1)
+    ass[#ass + 1] = rrect(x0 - 1 * s, y0 - 1 * s, cw + 2 * s, ch + 2 * s, 23 * s, BORDER, 0.95, 1)
+    ass[#ass + 1] = rrect(x0, y0, cw, ch, 22 * s, PANEL, 0.96, 1)
+    regions[#regions + 1] = { x1 = x0, y1 = y0, x2 = x0 + cw, y2 = y0 + ch, id = 'card' }
+
+    local y = y0 + pad
+    ass[#ass + 1] = rrect(x0 + pad, y, 54 * s, 54 * s, 27 * s, ACCENT, 0.18, 1)
+    ass[#ass + 1] = icon(x0 + pad + 27 * s, y + 27 * s, e.icon or 'videocam_off', 28 * s, ACCENT, 1, 1)
+    ass[#ass + 1] = text(x0 + pad + 70 * s, y + 15 * s, 4, 'LECTURE IMPOSSIBLE', 11 * s, ACCENT, 1, 1)
+    ass[#ass + 1] = text(x0 + pad + 70 * s, y + 38 * s, 4, ellipsize_middle(e.name, inner - 70 * s, 17 * s), 17 * s, WHITE, 1, 1)
+    y = y + 54 * s + 20 * s
+    for _, l in ipairs(lines) do
+        ass[#ass + 1] = text(x0 + pad, y + 10 * s, 4, l, rsize, WHITE, 0.85, 1)
+        y = y + 21 * s
+    end
+    if detail then
+        y = y + 6 * s
+        ass[#ass + 1] = text(x0 + pad, y + 8 * s, 4, detail, 11.5 * s, WHITE, 0.45, 1)
+        y = y + 16 * s
+    end
+    y = y + 24 * s
+
+    -- boutons, alignés à droite : [Afficher dans le dossier] [⏮] [⏭] [Fermer]
+    local roomy = cw >= 470 * s
+    local function pbtn(xr, label, ic, id, fn, primary, tip)
+        local size = 13.5 * s
+        local tw = label ~= '' and text_w(label, size) or 0
+        local w = (ic and 22 * s or 0) + tw + ((ic and label ~= '') and 8 * s or 0) + 32 * s
+        local x = xr - w
+        local r = { x1 = x, y1 = y, x2 = x + w, y2 = y + bh, id = id, click = fn }
+        local hov = inside(r, mouse.x, mouse.y)
+        if primary then
+            ass[#ass + 1] = rrect(x, y, w, bh, bh / 2, hov and 'FFFFFF' or ACCENT, 1, 1)
+        else
+            ass[#ass + 1] = rrect(x - 1 * s, y - 1 * s, w + 2 * s, bh + 2 * s, bh / 2 + 1 * s, BORDER, 1, 1)
+            ass[#ass + 1] = rrect(x, y, w, bh, bh / 2, '221B1B', 1, 1)
+            if hov then ass[#ass + 1] = rrect(x, y, w, bh, bh / 2, WHITE, 0.10, 1) end
+        end
+        local fg = (primary and hov) and '141414' or WHITE
+        local cx = x + 16 * s
+        if ic then
+            ass[#ass + 1] = icon(cx + 11 * s, y + bh / 2, ic, 21 * s, fg, 1, 1)
+            cx = cx + 22 * s + (label ~= '' and 8 * s or 0)
+        end
+        if label ~= '' then ass[#ass + 1] = text(cx, y + bh / 2, 4, label, size, fg, 1, 1) end
+        if hov and tip then tooltip(x + w / 2, y - 22 * s, tip, s, 1) end
+        table.insert(regions, 1, r)   -- en tête de liste : prioritaire sur le fond de la carte
+        return x - 10 * s
+    end
+    local xr = x0 + cw - pad
+    xr = pbtn(xr, 'Fermer', nil, 'errclose', close_player, true)
+    if nav.next then
+        xr = pbtn(xr, '', 'skip_next', 'errnext', function() go_neighbor(1) end, false,
+            'Suivante  ·  ' .. strip_ext(base_name(nav.next)))
+    end
+    if nav.prev then
+        xr = pbtn(xr, '', 'skip_previous', 'errprev', function() go_neighbor(-1) end, false,
+            'Précédente  ·  ' .. strip_ext(base_name(nav.prev)))
+    end
+    if e.exists and e.path then
+        pbtn(xr, roomy and (MAC and 'Afficher dans le Finder' or 'Afficher dans le dossier') or '', 'folder_open', 'errshow',
+            function() reveal(e.path) end, false, (not roomy) and 'Afficher dans le dossier' or nil)
+    end
+end
+
 -- ---------- Mise en page adaptative (paysage, portrait, petites fenêtres) ----------
 -- Taille de base = hauteur ; si la fenêtre est trop étroite (vidéo portrait), on réduit l'échelle
 -- et on passe en barre « compacte » (sans curseur de volume ni ±10 s).
@@ -586,9 +940,11 @@ end
 -- ---------- Dessin ----------
 local function render()
     regions = {}
+    late = {}
     local ass = {}
     local s, compact = layout()
     local fb, ft = fade.bottom, fade.top
+    if err then fb = 0 end        -- fichier illisible : la fiche remplace la barre du bas
 
     if PRO and LUT.split and LUT.file then
         local d = mp.get_property_native('osd-dimensions') or {}
@@ -612,6 +968,8 @@ local function render()
     if PRO and info_on then render_info(ass, s) end
     if PRO and guide_mode == 0 and mp.get_time() < guide_flash then render_guides(ass, s) end
 
+    if err then render_error(ass, s) end
+
     -- === Pilule du bas (style KSHFLIX) ===
     local pw = math.min((compact and (PRO and 580 or 440) or (PRO and 980 or 820)) * s, W - 16 * s)
     local ph = 104 * s
@@ -633,6 +991,20 @@ local function render()
             end
             ass[#ass + 1] = icon(x, row1, name, size, active and ACCENT or WHITE, 1, fb)
             regions[#regions + 1] = r
+        end
+
+        -- vidéo précédente / suivante du dossier, avec son nom au survol
+        local function nav_button(x, dir)
+            local target = dir < 0 and nav.prev or nav.next
+            local r = { x1 = x - 19 * s, y1 = row1 - 19 * s, x2 = x + 19 * s, y2 = row1 + 19 * s,
+                        id = dir < 0 and 'prev' or 'next', click = function() go_neighbor(dir) end }
+            local hov = inside(r, mouse.x, mouse.y)
+            if hov and target then ass[#ass + 1] = rrect(r.x1, r.y1, 38 * s, 38 * s, 19 * s, WHITE, 0.12, fb) end
+            ass[#ass + 1] = icon(x, row1, dir < 0 and 'skip_previous' or 'skip_next', 26 * s, WHITE, target and 1 or 0.3, fb)
+            regions[#regions + 1] = r
+            if hov and target then
+                tooltip(x, py - 24 * s, (dir < 0 and 'Précédente  ·  ' or 'Suivante  ·  ') .. strip_ext(base_name(target)), s, fb)
+            end
         end
 
         -- Gauche : volume (icône + curseur)
@@ -660,12 +1032,18 @@ local function render()
             vx1 = vx1, vx2 = vx2, vmax = vmax, wheel = vol_wheel }
         end
 
-        -- Centre : -10 s / lecture / +10 s
-        local cx = compact and (px + 82 * s) or (px + pw / 2)
+        -- Centre : ⏮ / -10 s / lecture / +10 s / ⏭  (⏮ ⏭ seulement s'il y a d'autres vidéos dans le dossier)
+        local navs = has_neighbors()
+        local cx = compact and (px + (navs and 124 or 82) * s) or (px + pw / 2)
         local paused = mp.get_property_native('pause')
         if not compact then
             button(cx - 62 * s, 'replay_10', 25 * s, 'back', function() mp.commandv('seek', '-10') end)
             button(cx + 62 * s, 'forward_10', 25 * s, 'fwd', function() mp.commandv('seek', '10') end)
+        end
+        if navs then
+            local gap = compact and 46 or 118
+            nav_button(cx - gap * s, -1)
+            nav_button(cx + gap * s, 1)
         end
         local pr = { x1 = cx - 24 * s, y1 = row1 - 24 * s, x2 = cx + 24 * s, y2 = row1 + 24 * s, id = 'play',
                      click = function() mp.commandv('cycle', 'pause') end }
@@ -831,9 +1209,21 @@ local function render()
         ass[#ass + 1] = rrect(ox + 16 * s, 16 * s, tw, 44 * s, 22 * s, PANEL, 0.86, ft)
         ass[#ass + 1] = rrect(ox + 34 * s, 34 * s, 8 * s, 8 * s, 4 * s, ACCENT, 1, ft)
         ass[#ass + 1] = text(ox + 52 * s, 38 * s, 4, title, 14 * s, WHITE, 0.95, ft)
+        local bx = ox + 16 * s + tw + 8 * s
         if PRO then
-            ass[#ass + 1] = rrect(ox + 16 * s + tw + 8 * s, 24 * s, 46 * s, 28 * s, 9 * s, ACCENT, 1, ft)
-            ass[#ass + 1] = text(ox + 16 * s + tw + 31 * s, 38 * s, 5, 'PRO', 12 * s, WHITE, 1, ft, BRAND_FONT)
+            ass[#ass + 1] = rrect(bx, 24 * s, 46 * s, 28 * s, 9 * s, ACCENT, 1, ft)
+            ass[#ass + 1] = text(bx + 23 * s, 38 * s, 5, 'PRO', 12 * s, WHITE, 1, ft, BRAND_FONT)
+            bx = bx + 54 * s
+        end
+        if APERCU then
+            -- rappel discret : on est dans l'aperçu (Espace referme, Entrée ouvre en grand)
+            local lbl = 'APERÇU  ·  ESPACE POUR FERMER'
+            local lw = text_w(lbl, 11 * s) + 24 * s
+            if bx + lw < W - 160 * s then
+                ass[#ass + 1] = rrect(bx - 1 * s, 23 * s, lw + 2 * s, 30 * s, 10 * s, BORDER, 0.9, ft)
+                ass[#ass + 1] = rrect(bx, 24 * s, lw, 28 * s, 9 * s, PANEL, 0.86, ft)
+                ass[#ass + 1] = text(bx + lw / 2, 38 * s, 5, lbl, 11 * s, WHITE, 0.8, ft)
+            end
         end
     end
 
@@ -845,22 +1235,29 @@ local function render()
         local ty = 16 * s
         ass[#ass + 1] = rrect(tx - 1 * s, ty - 1 * s, tw + 2 * s, 46 * s, 23 * s, BORDER, 0.9, ft)
         ass[#ass + 1] = rrect(tx, ty, tw, 44 * s, 22 * s, PANEL, 0.86, ft)
-        local function tbtn(i, name, id, fn, hover_color)
+        local function tbtn(i, name, id, fn, hover_color, tip)
             local cx = tx + 6 * s + bw * (i - 0.5)
             local cy = ty + 22 * s
             local r = { x1 = cx - bw / 2, y1 = ty, x2 = cx + bw / 2, y2 = ty + 44 * s, id = id, click = fn }
             local hov = inside(r, mouse.x, mouse.y)
             if hov then
                 ass[#ass + 1] = rrect(cx - 16 * s, cy - 16 * s, 32 * s, 32 * s, 16 * s, hover_color or WHITE, hover_color and 0.9 or 0.14, ft)
+                if tip then tooltip(cx, ty + 66 * s, tip, s, ft) end
             end
             ass[#ass + 1] = icon(cx, cy, name, 20 * s, WHITE, 1, ft)
             regions[#regions + 1] = r
         end
         local fs = mp.get_property_native('fullscreen')
-        tbtn(1, 'remove', 'min', function() mp.commandv('cycle', 'window-minimized') end)
+        if APERCU then
+            tbtn(1, 'open_in_new', 'open', open_full, nil, 'Ouvrir dans ' .. (PRO and 'KSHPLAYER PRO' or 'KSHPLAYER') .. '  ·  Entrée')
+        else
+            tbtn(1, 'remove', 'min', function() mp.commandv('cycle', 'window-minimized') end)
+        end
         tbtn(2, fs and 'fullscreen_exit' or 'fullscreen', 'tfs', function() mp.commandv('cycle', 'fullscreen') end)
         tbtn(3, 'close', 'close', function()
-            -- la croix ferme toute l'appli (la fin du film, elle, ramène à l'accueil)
+            if APERCU then close_player(); return end      -- l'aperçu se referme, rien d'autre
+            -- la croix ferme KSHPLAYER (depuis 1.2 sur Windows, fermer la vidéo ferme l'appli dans tous les cas ;
+            -- exit-app est gardé pour l'ancienne appli 1.1.x, qui revenait à son accueil en fin de film)
             mp.set_property('user-data/kshosc/exit-app', 'yes')
             mp.add_timeout(0.08, function() mp.commandv('quit') end)
         end, ACCENT)
@@ -871,6 +1268,27 @@ local function render()
     if fb > 0.01 then
         regions[#regions + 1] = { x1 = px, y1 = py, x2 = px + pw, y2 = py + ph, id = 'panel' }
     end
+
+    -- === Message passager (ex. « Mise à jour prête ») : centré sous la rangée du haut, jamais sur une barre ===
+    if toast then
+        local now = mp.get_time()
+        if now >= toast.t1 then
+            toast = nil
+        else
+            local tf = math.max(0, math.min(1, (now - toast.t0) * 4, (toast.t1 - now) * 2))   -- fondu entrée / sortie
+            local size = 13 * s
+            local maxw = math.min(W - 32 * s, 680 * s)
+            local label = ellipsize_middle(toast.text, maxw - 58 * s, size)
+            local tw = text_w(label, size) + 58 * s
+            local tx, ty = (W - tw) / 2, 76 * s
+            ass[#ass + 1] = rrect(tx - 1 * s, ty - 1 * s, tw + 2 * s, 42 * s, 21 * s, BORDER, 0.9, tf)
+            ass[#ass + 1] = rrect(tx, ty, tw, 40 * s, 20 * s, PANEL, 0.92, tf)
+            ass[#ass + 1] = rrect(tx + 20 * s, ty + 16 * s, 8 * s, 8 * s, 4 * s, ACCENT, 1, tf)
+            ass[#ass + 1] = text(tx + 38 * s, ty + 20 * s, 4, label, size, WHITE, 0.95, tf)
+        end
+    end
+
+    for _, a in ipairs(late) do ass[#ass + 1] = a end   -- infobulles par-dessus tout
 
     overlay.res_x, overlay.res_y = W, H
     overlay.data = table.concat(ass, '\n')
@@ -1010,6 +1428,13 @@ mp.observe_property('osd-dimensions', 'native', function(_, d)
     if d then W, H = d.w, d.h end
 end)
 
+-- Message passager envoyé par l'appli : script-message-to kshosc ksh-toast "<texte>" [secondes]
+mp.register_script_message('ksh-toast', function(msg, secs)
+    if not msg or msg == '' then return end
+    local now = mp.get_time()
+    toast = { text = msg, t0 = now, t1 = now + (tonumber(secs) or 6) }
+end)
+
 -- Affiche brièvement la barre lors d'un saut ou d'une pause au clavier
 mp.register_event('seek', function() flash_until = mp.get_time() + 1.2 end)
 mp.observe_property('pause', 'bool', function() flash_until = mp.get_time() + 1.2 end)
@@ -1029,8 +1454,8 @@ mp.add_periodic_timer(1 / 30, function()
     local near_bottom = mouse.y >= H - (104 + 26 + 120) * s
     local near_top = mouse.y <= 90 * s
 
-    local want_bottom = dragging or menu ~= nil or over or now < flash_until
-        or mp.get_property_native('pause') or (recent and near_bottom)
+    local want_bottom = not err and (dragging or menu ~= nil or over or now < flash_until
+        or mp.get_property_native('pause') or (recent and near_bottom))
     local want_top = (recent and near_top) or (over and near_top)
 
     local function step(cur, want)
@@ -1042,7 +1467,8 @@ mp.add_periodic_timer(1 / 30, function()
     fade.top = step(fade.top, want_top)
     if fade.bottom == 0 then menu = nil end
 
-    local persistent = PRO and (info_on or guide_mode > 0 or now < guide_flash or (LUT.split and LUT.file ~= nil))
+    local persistent = err ~= nil or toast ~= nil or
+        (PRO and (info_on or guide_mode > 0 or now < guide_flash or (LUT.split and LUT.file ~= nil)))
     if fade.bottom > 0 or fade.top > 0 or persistent then
         render()
         local captured = region_at(mouse.x, mouse.y) ~= nil or dragging or menu ~= nil
@@ -1058,11 +1484,72 @@ mp.add_periodic_timer(1 / 30, function()
     end
 end)
 
+-- ---------- Vidéo précédente / suivante, fiche d'erreur, fin de lecture ----------
+-- Le titre affiché suit le fichier (aussi après ⏮ ⏭ ou un glisser-déposer sur la fenêtre)
+mp.register_event('start-file', function()
+    err = nil
+    mp.remove_key_binding('ksh_err_esc')
+    mp.remove_key_binding('ksh_err_enter')
+    mp.remove_key_binding('ksh_err_kpenter')
+    last_path = mp.get_property('path', last_path)
+    local p = local_path(last_path)
+    if p then
+        mp.set_property('force-media-title', strip_ext(base_name(p)))
+        -- même dossier : on recale tout de suite ⏮ ⏭ (sans relire le dossier)
+        if nav.dir and utils.split_path(p) == nav.dir then scan_neighbors(false) end
+    elseif not (last_path or ''):find('^mf://') then
+        mp.set_property('force-media-title', '')     -- flux : son propre titre (une séquence garde le sien)
+    end
+end)
+
+mp.register_event('file-loaded', function()
+    played_something = true
+    -- voisins cherchés juste après le démarrage, pour ne pas retarder l'image
+    mp.add_timeout(0.3, function() scan_neighbors(false) end)
+end)
+
+mp.register_event('end-file', function(e)
+    if e.reason ~= 'error' then return end
+    err = explain_error(e)
+    menu = nil
+    mp.msg.warn('lecture impossible : ' .. tostring(err.name) .. ' (' .. tostring(e.file_error or e.error or '?') .. ')')
+    scan_neighbors(false)
+    mp.add_forced_key_binding('ESC', 'ksh_err_esc', close_player)
+    mp.add_forced_key_binding('ENTER', 'ksh_err_enter', close_player)
+    mp.add_forced_key_binding('KP_ENTER', 'ksh_err_kpenter', close_player)
+    -- sans fenêtre vidéo (Mac sans force-window, carte graphique indisponible…), la fiche ne peut pas
+    -- s'afficher : on rend la main tout de suite, comme avant
+    mp.add_timeout(0.4, function()
+        if err and not mp.get_property_native('vo-configured') then close_player() end
+    end)
+end)
+
+-- Avant : idle=once (mpv se fermait tout seul en fin de liste, même après une erreur, sans rien dire).
+-- Maintenant : mpv reste ouvert ; on ferme nous-mêmes en fin de lecture, sauf s'il faut montrer une erreur.
+mp.set_property('idle', 'yes')
+mp.observe_property('idle-active', 'bool', function(_, idle)
+    if not idle then return end
+    mp.add_timeout(0.15, function()
+        if mp.get_property_native('idle-active') and played_something and not err then close_player() end
+    end)
+end)
+
+mp.add_forced_key_binding('PGUP', 'ksh_prev', function() go_neighbor(-1) end)
+mp.add_forced_key_binding('PGDWN', 'ksh_next', function() go_neighbor(1) end)
+mp.add_forced_key_binding('PREV', 'ksh_prev_media', function() go_neighbor(-1) end)
+mp.add_forced_key_binding('NEXT', 'ksh_next_media', function() go_neighbor(1) end)
+mp.add_forced_key_binding('MBTN_BACK', 'ksh_prev_mouse', function() go_neighbor(-1) end)
+mp.add_forced_key_binding('MBTN_FORWARD', 'ksh_next_mouse', function() go_neighbor(1) end)
+mp.add_forced_key_binding('Ctrl+PGUP', 'ksh_chap_prev', function() chapter_step(-1) end)
+mp.add_forced_key_binding('Ctrl+PGDWN', 'ksh_chap_next', function() chapter_step(1) end)
+
 -- ---------- Raccourcis PRO ----------
 if PRO then
     local function k(key, name, fn, flags) mp.add_forced_key_binding(key, name, fn, flags) end
-    k('RIGHT', 'ksh_fstep', function() mp.commandv('frame-step') end, { repeatable = true })
-    k('LEFT', 'ksh_fback', function() mp.commandv('frame-back-step') end, { repeatable = true })
+    if not APERCU then   -- dans l'aperçu, ← → passent à la vidéo voisine (comme Orbit Look)
+        k('RIGHT', 'ksh_fstep', function() mp.commandv('frame-step') end, { repeatable = true })
+        k('LEFT', 'ksh_fback', function() mp.commandv('frame-back-step') end, { repeatable = true })
+    end
     k('Shift+RIGHT', 'ksh_s1f', function() mp.commandv('seek', '1', 'exact') end, { repeatable = true })
     k('Shift+LEFT', 'ksh_s1b', function() mp.commandv('seek', '-1', 'exact') end, { repeatable = true })
     k('HOME', 'ksh_home', function() mp.commandv('seek', '0', 'absolute+exact') end)
@@ -1084,4 +1571,18 @@ if PRO then
     mp.set_property('screenshot-template', '%F - %wH-%wM-%wS-%wT')
     -- les clics/molette sur l'image servent au jog : on garde la molette active en permanence
     mp.enable_key_bindings('ksh_wheel', '')
+end
+
+-- ---------- Aperçu (barre Espace dans l'Explorateur / sur le Bureau, Windows) ----------
+-- Comme Orbit Look : Espace ou Échap referme, ← → (et ↑ ↓) passent à la vidéo voisine, Entrée ouvre en grand.
+if APERCU then
+    local function k(key, name, fn) mp.add_forced_key_binding(key, name, fn) end
+    k('SPACE', 'ksh_ap_space', close_player)
+    k('ESC', 'ksh_ap_esc', close_player)
+    k('ENTER', 'ksh_ap_enter', open_full)
+    k('KP_ENTER', 'ksh_ap_kpenter', open_full)
+    k('LEFT', 'ksh_ap_left', function() go_neighbor(-1) end)
+    k('UP', 'ksh_ap_up', function() go_neighbor(-1) end)
+    k('RIGHT', 'ksh_ap_right', function() go_neighbor(1) end)
+    k('DOWN', 'ksh_ap_down', function() go_neighbor(1) end)
 end

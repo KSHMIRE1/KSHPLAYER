@@ -9,15 +9,20 @@ namespace KSHPLAYER.Setup
         public const string Exe = "KSHPLAYERPRO.exe";
         public const string Key = "KSHPLAYERPRO";
         public const string Tagline = "Le lecteur des monteurs : timecode, image par image, LUT, repères de cadrage.";
+        /// <summary>Petit programme résident : aperçu à la barre Espace + désinstallation.</summary>
+        public const string ApercuExe = "KSHPLAYERPRO-Apercu.exe";
 #else
         public const bool IsPro = false;
         public const string Name = "KSHPLAYER";
         public const string Exe = "KSHPLAYER.exe";
         public const string Key = "KSHPLAYER";
         public const string Tagline = "Le lecteur qui lit tout, en 4K HDR, sans prise de tête.";
+        /// <summary>Petit programme résident : aperçu à la barre Espace + désinstallation.</summary>
+        public const string ApercuExe = "KSHPLAYER-Apercu.exe";
 #endif
         public static readonly string Version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
         public const string Publisher = "KSHMIRE";
+        public const string Website = "https://github.com/KSHMIRE1/KSHPLAYER";
 
         /// <summary>Descriptif affiché à l'ouverture de l'installateur : (titre, détail).</summary>
         public static readonly string[][] Features =
@@ -34,6 +39,10 @@ namespace KSHPLAYER.Setup
                     "SRT, ASS, PGS (Blu-ray), VobSub… choix des pistes audio et sous-titres en un clic, français en priorité." },
             new[] { "Que la vidéo à l'écran",
                     "Fenêtre sans bord ni bandes noires, barre de contrôle KSHFLIX qui n'apparaît qu'en approchant du bas." },
+            new[] { "Aperçu avec la barre Espace",
+                    "Dans l'Explorateur ou sur le Bureau, sélectionne une vidéo et appuie sur Espace : elle se lit tout de suite." },
+            new[] { "Épisode suivant en un clic",
+                    "Pg préc. / Pg suiv. ou les boutons de la barre : la vidéo d'à côté dans le même dossier, triée comme dans l'Explorateur." },
             new[] { "DVD, Blu-ray et flux",
                     "Dossiers / ISO de DVD et Blu-ray non protégés, liens HLS, DASH, RTSP, SMB, SFTP." },
 #if KSHPRO
@@ -61,6 +70,17 @@ namespace KSHPLAYER.Setup
         {
             ".mkv", ".mp4", ".m4v", ".mov", ".avi", ".wmv", ".webm", ".ts", ".m2ts", ".mts", ".mpg", ".mpeg",
             ".vob", ".flv", ".ogv", ".3gp", ".rmvb", ".mxf", ".asf", ".divx", ".y4m",
+        };
+
+        /// <summary>
+        /// Vidéos que l'aperçu Espace prend en charge (KSHPLAYER sait les lire). Le reste (images, documents,
+        /// formats RAW comme .braw) est laissé à l'Explorateur ou à un autre outil d'aperçu (Orbit Look…).
+        /// </summary>
+        public static readonly string[] PreviewExtensions =
+        {
+            ".mkv", ".mk3d", ".mp4", ".m4v", ".mov", ".qt", ".avi", ".divx", ".wmv", ".asf", ".webm", ".ts", ".m2ts",
+            ".mts", ".m2t", ".mpg", ".mpeg", ".m2v", ".vob", ".flv", ".f4v", ".ogv", ".3gp", ".3g2", ".rm", ".rmvb",
+            ".mxf", ".y4m", ".dv", ".hevc", ".h264", ".h265", ".264", ".265", ".ivf", ".wtv",
         };
     }
 }

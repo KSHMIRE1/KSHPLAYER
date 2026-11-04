@@ -1,1 +1,1 @@
-PRO : LUT entièrement sur la carte graphique — intensité et avant/après fluides, même en 4K HDR
+Plus d'écran d'accueil : la vidéo s'ouvre tout de suite · aperçu à la barre Espace · vidéo précédente / suivante (Pg préc. / Pg suiv.) · message clair si un fichier ne se lit pas · plus léger
