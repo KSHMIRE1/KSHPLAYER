@@ -117,6 +117,7 @@ toute modif de `mpv/scripts/kshosc.lua` touche aussi le Mac : garder `MAC`/`opts
   - **Mac** : bandeau « Télécharger » qui ouvre le .dmg.
 - Côté Windows, l'appli recopie aussi les 4 fichiers sur le NAS de Calvin s'il est présent (`Updater.MirrorToNasAsync`).
 - **Pour publier une version** : augmenter `VERSION`, écrire `NOTES.txt` (une ligne), puis pousser sur `main`. Ça prend environ 6 min.
+  - Si GitHub n'a pas de Mac libre (arrivé le 2026-11-04 : job « mac » annulé), Windows est publié quand même : les `.dmg` précédents restent en ligne et `version.json` omet les clés `mac`/`mac_pro`, donc les Mac ne voient pas de mise à jour. Republier plus tard (`gh run rerun` ou nouveau push) pour sortir les `.dmg`.
   - Pour un push qui ne doit rien publier, mettre `[skip ci]` dans le message de commit.
 - ⚠️ L'URL de mise à jour est **codée en dur** sur `KSHMIRE1/KSHPLAYER` (`Updater.cs`, `macOS/Sources/Updater.swift`, `.github/version_json.py`).
   - Un fork publie ses propres fichiers, mais les applis installées continuent de suivre le dépôt de Calvin.
