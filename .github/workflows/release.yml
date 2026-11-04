@@ -86,6 +86,9 @@ jobs:
 
   publish:
     needs: [windows, mac]
+    # Windows suffit pour publier : si GitHub n'a pas de Mac libre, les .dmg précédents restent en ligne
+    # (et version.json ne propose pas de mise à jour aux Mac tant que leur nouvelle version n'est pas fabriquée).
+    if: always() && needs.windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -100,7 +103,14 @@ jobs:
           find dl -name "*.exe" -exec cp {} pub/ \;
           find dl -name "*.dmg" -exec cp {} pub/ \;
           V="$(tr -d '[:space:]' < VERSION)"
-          python3 .github/version_json.py "$V" pub/version.json
+          MAC=yes
+          if ! ls pub/*.dmg >/dev/null 2>&1; then
+            MAC=no
+            git fetch -q --depth 1 origin telechargements
+            for f in KSHPLAYER.dmg KSHPLAYER-PRO.dmg; do git show "FETCH_HEAD:$f" > "pub/$f" || rm -f "pub/$f"; done
+            echo "::warning::Pas de Mac disponible chez GitHub : .dmg précédents conservés, Mac non mis à jour cette fois"
+          fi
+          python3 .github/version_json.py "$V" pub/version.json "$MAC"
           ls -la pub
           cd pub
           git init -q -b telechargements
