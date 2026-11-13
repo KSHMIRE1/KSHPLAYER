@@ -15,7 +15,7 @@ namespace KSHPLAYER;
 /// <summary>
 /// Détection des génériques de séries (« Passer l'intro », « Épisode suivant »), façon Netflix / Jellyfin.
 ///
-/// Principe : l'intro d'une série a la même musique à chaque épisode. On compare le son du début (7 min) de deux
+/// Principe : l'intro d'une série a la même musique à chaque épisode. On compare le son du début (10 min) de deux
 /// épisodes voisins : le plus long passage identique (15 s à 3 min) est l'intro. Pareil sur les 4 dernières minutes
 /// pour le générique de fin. Aucun service en ligne, aucune base de données : tout se fait sur le PC.
 ///
@@ -32,14 +32,14 @@ internal static class Intros
     private const int Win = 2048;               // fenêtre d'analyse : 0,256 s
     private const int Hop = 800;                // une empreinte toutes les 0,1 s
     private const double FrameSec = (double)Hop / Rate;
-    private const double HeadSec = 420;         // début analysé : 7 min (l'intro arrive presque toujours avant)
+    private const double HeadSec = 600;         // début analysé : 10 min (certaines séries ont une longue scène avant l'intro)
     private const double TailSec = 240;         // fin analysée : 4 min
     private const int MinFrames = 150;          // passage commun d'au moins 15 s
     private const int PieceFrames = 30;         // morceaux recollés : 3 s minimum chacun
     private const int MaxIntroFrames = 1800;    // une intro dure au plus 3 min
     private const int MaxGap = 20;              // trous tolérés dans un passage commun (2 s : bruitages, dialogues par-dessus)
     private const int MaxBits = 10;             // empreintes « identiques » : au plus 10 bits différents sur 32
-    private const int FpVersion = 1;
+    private const int FpVersion = 2;              // 2 : début sur 10 min (1.3.1)
 
     public static readonly string DbPath = Path.Combine(AppLog.Folder, "intros-v2.json");   // v2 : 1.3.1 (les « rien trouvé » de 1.3.0 sont refaits)
     private static readonly string FpFolder = Path.Combine(AppLog.Folder, "empreintes");
@@ -192,7 +192,7 @@ internal static class Intros
     /// <summary>Test : compare deux fichiers d'empreintes (.fp) et affiche intro / fin trouvées.</summary>
     internal static int CompareFiles(string fa, string fb)
     {
-        var a = ReadPrint(fa); var b = ReadPrint(fb);
+        var a = ReadPrint(fa, true); var b = ReadPrint(fb, true);
         if (a == null || b == null) { Console.WriteLine("empreinte illisible"); return 2; }
         var h = Match(a.Head, b.Head, MaxIntroFrames);
         var t = Match(a.Tail, b.Tail, int.MaxValue);
@@ -235,7 +235,7 @@ internal static class Intros
         p = new Print { HeadStart = 0, Head = Fingerprint(head) };
         // fin : seulement si l'épisode est assez long pour ne pas relire le début
         double tailLen = Math.Min(TailSec, dur * 0.3);
-        if (dur > HeadSec + 60 && tailLen >= 30)
+        if (dur >= 300 && tailLen >= 30)                       // dessins animés de 11 min compris
         {
             p.TailStart = Math.Max(0, dur - tailLen);
             var tail = Decode(file, p.TailStart, tailLen, out _);
@@ -422,13 +422,13 @@ internal static class Intros
 
     // ---------- Cache des empreintes ----------
 
-    private static Print? ReadPrint(string path)
+    private static Print? ReadPrint(string path, bool anyVersion = false)
     {
         try
         {
             if (!File.Exists(path)) return null;
             using var r = new BinaryReader(File.OpenRead(path));
-            if (r.ReadInt32() != FpVersion) return null;
+            if (r.ReadInt32() != FpVersion && !anyVersion) return null;   // même format, seule la longueur analysée change
             var p = new Print { HeadStart = r.ReadDouble(), TailStart = r.ReadDouble() };
             p.Head = ReadFps(r);
             p.Tail = ReadFps(r);

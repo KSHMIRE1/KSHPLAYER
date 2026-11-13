@@ -329,7 +329,7 @@ end
 -- Où sont l'intro et le générique de fin ?
 --   1. chapitres du fichier nommés « Intro », « Opening », « Générique », « Credits »… (Mac et Windows)
 --   2. sinon (Windows) : KSHPLAYER.exe --intros compare le son de deux épisodes voisins (voir Intros.cs),
---      en arrière-plan, et range le résultat dans intros.json ; le suivant est préparé à l'avance.
+--      en arrière-plan, et range le résultat dans intros-v2.json ; le suivant est préparé à l'avance.
 local ep = { path = nil, intro = nil, credits = nil, src = nil, dismissed = false, asked = {}, skipped = false }
 
 local function episode_like(name)
@@ -338,9 +338,21 @@ local function episode_like(name)
         or n:find('[eé]pisode%s*%d') or n:find('%s%-%s%d%d+%f[%D]') or false
 end
 
+-- « Show 03.mkv » / « Show 04.mkv » : même nom aux numéros près → même série, même sans S01E03
+local function same_series(a, b)
+    if not a or not b then return false end
+    local na, nb = strip_ext(base_name(a)):lower(), strip_ext(base_name(b)):lower()
+    if not na:find('%d') or na == nb then return false end
+    return (na:gsub('%d+', '#')) == (nb:gsub('%d+', '#'))
+end
+
+local function is_series(p, other)
+    return (episode_like(p) and episode_like(other)) or same_series(p, other)
+end
+
 local function series_on()
     -- même règle pour l'intro et l'épisode suivant : une vraie série, rangée dans un dossier
-    return not APERCU and ep.path ~= nil and episode_like(ep.path) and nav.next ~= nil and episode_like(nav.next)
+    return not APERCU and ep.path ~= nil and nav.next ~= nil and is_series(ep.path, nav.next) and true or false
 end
 
 local MARK_WORDS = { 'intro', 'opening', 'op', 'ed', 'ending', 'outro', 'credits', 'credit', 'crédits', 'générique',
@@ -416,7 +428,7 @@ local function series_check()
     local ci, cc = chapter_marks()
     if ci or cc then
         ep.intro, ep.credits, ep.src = ci, cc, 'chapitres'
-    elseif not apply_db(from_db(p)) and episode_like(p) and (nav.prev or nav.next) then
+    elseif not apply_db(from_db(p)) and ((nav.next and is_series(p, nav.next)) or (nav.prev and is_series(p, nav.prev))) then
         analyse(p)
     end
     publish_ep()
