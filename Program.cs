@@ -24,6 +24,10 @@ internal static class Program
     {
         AppDomain.CurrentDomain.UnhandledException += (_, e) => AppLog.Write("Erreur fatale", e.ExceptionObject as Exception);
 
+        // Analyse des génériques en arrière-plan, lancée par la barre (kshosc.lua) : aucune fenêtre
+        if (args.Length > 0 && args[0] == "--intros")
+            return Intros.Run(args.Skip(1).ToArray());
+
         string? file = null;
         double? start = null;
         foreach (var a in args)

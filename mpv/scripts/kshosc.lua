@@ -8,7 +8,8 @@ local utils = require 'mp.utils'
 -- Options passées par l'appli (édition PRO, dossiers LUT / captures)
 --   apercu = fenêtre d'aperçu ouverte par la barre Espace (KSHPLAYER-Apercu.exe, Windows)
 --   appexe = chemin de KSHPLAYER.exe, pour « ouvrir en grand » depuis l'aperçu
-local opts = { pro = false, lutdir = '', shotdir = '', platform = 'windows', font = '', apercu = false, appexe = '' }
+local opts = { pro = false, lutdir = '', shotdir = '', platform = 'windows', font = '', apercu = false, appexe = '',
+               introexe = '', introdb = '' }
 require('mp.options').read_options(opts, 'kshosc')
 local PRO = opts.pro
 local MAC = opts.platform == 'mac'
@@ -322,6 +323,130 @@ end
 local function chapter_step(dir)
     if (mp.get_property_number('chapters', 0) or 0) > 0 then mp.commandv('add', 'chapter', tostring(dir))
     else mp.osd_message('Pas de chapitres dans cette vidéo', 1.2) end
+end
+
+-- ---------- Séries : « Passer l'intro » et « Épisode suivant » (façon Netflix) ----------
+-- Où sont l'intro et le générique de fin ?
+--   1. chapitres du fichier nommés « Intro », « Opening », « Générique », « Credits »… (Mac et Windows)
+--   2. sinon (Windows) : KSHPLAYER.exe --intros compare le son de deux épisodes voisins (voir Intros.cs),
+--      en arrière-plan, et range le résultat dans intros.json ; le suivant est préparé à l'avance.
+local ep = { path = nil, intro = nil, credits = nil, src = nil, dismissed = false, asked = {}, skipped = false }
+
+local function episode_like(name)
+    local n = strip_ext(base_name(name or '')):lower()
+    return n:find('s%d+[%s%._%-]*e%d+') or n:find('%f[%d]%d+x%d%d+%f[%D]') or n:find('%f[%w]ep?%.?%s?%d+%f[%D]')
+        or n:find('[eé]pisode%s*%d') or n:find('%s%-%s%d%d+%f[%D]') or false
+end
+
+local function series_on()
+    -- même règle pour l'intro et l'épisode suivant : une vraie série, rangée dans un dossier
+    return not APERCU and ep.path ~= nil and episode_like(ep.path) and nav.next ~= nil and episode_like(nav.next)
+end
+
+local MARK_WORDS = { 'intro', 'opening', 'op', 'ed', 'ending', 'outro', 'credits', 'credit', 'crédits', 'générique',
+                     'generique', 'ouverture', 'theme song', 'title sequence', 'end credits' }
+local function chapter_marks()
+    local list = mp.get_property_native('chapter-list') or {}
+    local dur = mp.get_property_number('duration', 0) or 0
+    local intro, credits = nil, nil
+    for i, c in ipairs(list) do
+        local t = ' ' .. (c.title or ''):lower():gsub('[%p]', ' ') .. ' '
+        local hit = false
+        for _, w in ipairs(MARK_WORDS) do
+            if t:find(' ' .. w .. ' ', 1, true) then hit = true; break end
+        end
+        local a, b = c.time or 0, (list[i + 1] and list[i + 1].time) or dur
+        if hit and b > a + 5 then
+            if a < dur * 0.5 then
+                if not intro and b - a < 240 then intro = { a, b } end
+            else
+                credits = credits or { a, b }
+            end
+        end
+    end
+    return intro, credits
+end
+
+local function db_key(p) return (p:gsub('/', '\\')):lower() end
+
+local function from_db(p)
+    if opts.introdb == '' then return nil end
+    local f = io.open(opts.introdb, 'r')
+    if not f then return nil end
+    local data = utils.parse_json(f:read('*a') or '')
+    f:close()
+    local e = data and data.files and data.files[db_key(p)]
+    local fi = utils.file_info(p)
+    if not e or not fi or tonumber(e.size) ~= fi.size then return nil end
+    return e
+end
+
+local function apply_db(e)
+    if not e then return false end
+    if type(e.intro) == 'table' and #e.intro == 2 then ep.intro = { e.intro[1], e.intro[2] } end
+    if type(e.credits) == 'table' and #e.credits == 2 then ep.credits = { e.credits[1], e.credits[2] } end
+    ep.src = 'analyse'
+    return true
+end
+
+local function publish_ep()   -- pour le diagnostic (et les tests)
+    mp.set_property_native('user-data/kshosc/episode', {
+        intro = ep.intro, credits = ep.credits, src = ep.src or 'aucune', next = nav.next or '', series = series_on() and true or false })
+end
+
+local function analyse(p)
+    if opts.introexe == '' or ep.asked[p] then return end
+    ep.asked[p] = true
+    local args = { opts.introexe, '--intros', p, nav.prev or '', nav.next or '' }
+    mp.msg.info('analyse des génériques : ' .. base_name(p))
+    mp.command_native_async({ name = 'subprocess', args = args, playback_only = false, capture_stdout = true,
+                              capture_stderr = true }, function(_, r)
+        if ep.path == p and not ep.intro and not ep.credits then
+            apply_db(from_db(p))
+            publish_ep()
+        end
+    end)
+end
+
+local function series_check()
+    local p = local_path(last_path or mp.get_property('path', ''))
+    if APERCU or not p then return end
+    ep.path = p
+    scan_neighbors(false)
+    local ci, cc = chapter_marks()
+    if ci or cc then
+        ep.intro, ep.credits, ep.src = ci, cc, 'chapitres'
+    elseif not apply_db(from_db(p)) and episode_like(p) and (nav.prev or nav.next) then
+        analyse(p)
+    end
+    publish_ep()
+end
+
+local function next_episode()
+    if not nav.next then return end
+    ep.dismissed = true
+    go_neighbor(1)
+end
+
+local function skip_intro()
+    if not ep.intro then return end
+    ep.skipped = true
+    mp.commandv('seek', tostring(ep.intro[2]), 'absolute+exact')
+end
+
+-- Ce qui doit s'afficher maintenant : 'intro', 'next' (avec compte à rebours si le générique est connu) ou nil
+local NEXT_COUNTDOWN = 10
+local function series_state()
+    if APERCU or err or not ep.path then return nil end
+    local pos = mp.get_property_number('time-pos')
+    local dur = mp.get_property_number('duration', 0) or 0
+    if not pos then return nil end
+    if ep.intro and not ep.skipped and pos >= ep.intro[1] and pos < ep.intro[2] - 1 then return 'intro' end
+    if series_on() and dur >= 300 and not ep.dismissed then
+        local from = (ep.credits and ep.credits[1] > dur * 0.6) and ep.credits[1] or (dur - 25)
+        if pos >= from then return 'next', from, ep.credits ~= nil end
+    end
+    return nil
 end
 
 -- « Afficher dans le dossier » : l'Explorateur (ou le Finder) s'ouvre avec le fichier sélectionné
@@ -929,12 +1054,13 @@ end
 -- Taille de base = hauteur ; si la fenêtre est trop étroite (vidéo portrait), on réduit l'échelle
 -- et on passe en barre « compacte » (sans curseur de volume ni ±10 s).
 local function layout()
-    local sh = math.max(0.75, math.min(1.7, H / 900))
+    -- échelle selon la hauteur : environ 25 % plus petite qu'en 1.2 (1080p ≈ 0,94 · 4K ≈ 1,3)
+    local sh = math.max(0.7, math.min(1.3, H / 1150))
     local full = PRO and 1000 or 860
     local compact = W < full * sh
     local base = compact and (PRO and 600 or 460) or full
     local sc = math.min(sh, (W - 16) / base)
-    return math.max(0.5, math.min(1.7, sc)), compact
+    return math.max(0.5, math.min(1.3, sc)), compact
 end
 
 -- ---------- Dessin ----------
@@ -1002,8 +1128,9 @@ local function render()
             if hov and target then ass[#ass + 1] = rrect(r.x1, r.y1, 38 * s, 38 * s, 19 * s, WHITE, 0.12, fb) end
             ass[#ass + 1] = icon(x, row1, dir < 0 and 'skip_previous' or 'skip_next', 26 * s, WHITE, target and 1 or 0.3, fb)
             regions[#regions + 1] = r
-            if hov and target then
-                tooltip(x, py - 24 * s, (dir < 0 and 'Précédente  ·  ' or 'Suivante  ·  ') .. strip_ext(base_name(target)), s, fb)
+            if hov then
+                tooltip(x, py - 24 * s, target and ((dir < 0 and 'Précédent  ·  ' or 'Suivant  ·  ') .. strip_ext(base_name(target)))
+                    or (dir < 0 and 'Pas de vidéo avant dans ce dossier' or 'Pas de vidéo après dans ce dossier'), s, fb)
             end
         end
 
@@ -1033,7 +1160,7 @@ local function render()
         end
 
         -- Centre : ⏮ / -10 s / lecture / +10 s / ⏭  (⏮ ⏭ seulement s'il y a d'autres vidéos dans le dossier)
-        local navs = has_neighbors()
+        local navs = has_neighbors() or not APERCU   -- toujours là : grisés s'il n'y a pas de voisine
         local cx = compact and (px + (navs and 124 or 82) * s) or (px + pw / 2)
         local paused = mp.get_property_native('pause')
         if not compact then
@@ -1288,6 +1415,48 @@ local function render()
         end
     end
 
+    -- === Séries : « Passer l'intro » / « Épisode suivant », en bas à droite (au-dessus de la barre si elle est là) ===
+    local st, from, counting = series_state()
+    if st then
+        local bh2 = 44 * s
+        local by = (fb > 0.01) and (py - bh2 - 14 * s) or (H - bh2 - 40 * s)
+        local xr = W - 32 * s
+        local function sbtn(xr0, label, ic, id, fn, primary, fill)
+            local size = 14 * s
+            local w = 22 * s + 8 * s + text_w(label, size) + 40 * s
+            local x = xr0 - w
+            local r = { x1 = x, y1 = by, x2 = x + w, y2 = by + bh2, id = id, click = fn }
+            local hov = inside(r, mouse.x, mouse.y)
+            ass[#ass + 1] = rrect(x - 1 * s, by - 1 * s, w + 2 * s, bh2 + 2 * s, bh2 / 2 + 1 * s, primary and ACCENT or BORDER, 1, 1)
+            ass[#ass + 1] = rrect(x, by, w, bh2, bh2 / 2, primary and '1B1BA0' or PANEL, primary and 1 or 0.92, 1)
+            if primary then
+                -- compte à rebours : le rouge KSHFLIX se remplit de gauche à droite
+                local k = fill or 1
+                if k > 0 then ass[#ass + 1] = rrect(x, by, math.max(bh2, w * k), bh2, bh2 / 2, hov and 'FFFFFF' or ACCENT, 1, 1) end
+            elseif hov then
+                ass[#ass + 1] = rrect(x, by, w, bh2, bh2 / 2, WHITE, 0.12, 1)
+            end
+            local fg = (primary and hov) and '141414' or WHITE
+            ass[#ass + 1] = icon(x + 20 * s + 11 * s, by + bh2 / 2, ic, 22 * s, fg, 1, 1)
+            ass[#ass + 1] = text(x + 20 * s + 30 * s, by + bh2 / 2, 4, label, size, fg, 1, 1)
+            table.insert(regions, 1, r)
+            return x - 10 * s
+        end
+        if st == 'intro' then
+            sbtn(xr, 'Passer l\'intro', 'fast_forward', 'skipintro', skip_intro, false)
+        else
+            local pos = mp.get_property_number('time-pos', 0)
+            local fill = counting and math.max(0, math.min(1, (pos - from) / NEXT_COUNTDOWN)) or 1
+            local x2 = sbtn(xr, 'Épisode suivant', 'skip_next', 'nextep', next_episode, true, fill)
+            if counting then
+                sbtn(x2, 'Générique', 'subject', 'credits', function() ep.dismissed = true end, false)
+            end
+            -- nom de l'épisode suivant, discret, au-dessus
+            local nm = ellipsize_middle(strip_ext(base_name(nav.next)), math.min(W * 0.5, 520 * s), 12 * s)
+            ass[#ass + 1] = text(xr - 4 * s, by - 14 * s, 6, nm, 12 * s, WHITE, 0.75, 1)
+        end
+    end
+
     for _, a in ipairs(late) do ass[#ass + 1] = a end   -- infobulles par-dessus tout
 
     overlay.res_x, overlay.res_y = W, H
@@ -1467,7 +1636,12 @@ mp.add_periodic_timer(1 / 30, function()
     fade.top = step(fade.top, want_top)
     if fade.bottom == 0 then menu = nil end
 
-    local persistent = err ~= nil or toast ~= nil or
+    local sstate, sfrom, scount = series_state()
+    if sstate == 'next' and scount and not mp.get_property_native('pause')
+        and (mp.get_property_number('time-pos', 0) or 0) >= sfrom + NEXT_COUNTDOWN then
+        next_episode()   -- générique connu : épisode suivant au bout de 10 s, comme Netflix
+    end
+    local persistent = err ~= nil or toast ~= nil or sstate ~= nil or
         (PRO and (info_on or guide_mode > 0 or now < guide_flash or (LUT.split and LUT.file ~= nil)))
     if fade.bottom > 0 or fade.top > 0 or persistent then
         render()
@@ -1488,6 +1662,7 @@ end)
 -- Le titre affiché suit le fichier (aussi après ⏮ ⏭ ou un glisser-déposer sur la fenêtre)
 mp.register_event('start-file', function()
     err = nil
+    ep.path, ep.intro, ep.credits, ep.src, ep.dismissed, ep.skipped = nil, nil, nil, nil, false, false
     mp.remove_key_binding('ksh_err_esc')
     mp.remove_key_binding('ksh_err_enter')
     mp.remove_key_binding('ksh_err_kpenter')
@@ -1506,9 +1681,29 @@ mp.register_event('file-loaded', function()
     played_something = true
     -- voisins cherchés juste après le démarrage, pour ne pas retarder l'image
     mp.add_timeout(0.3, function() scan_neighbors(false) end)
+    -- séries : chapitres, résultats déjà connus, sinon analyse en arrière-plan (après le démarrage de l'image)
+    mp.add_timeout(1.5, series_check)
 end)
 
+-- un retour avant le générique fait revenir « Épisode suivant » ; avant l'intro, « Passer l'intro »
+mp.register_event('seek', function()
+    local pos = mp.get_property_number('time-pos', 0) or 0
+    local dur = mp.get_property_number('duration', 0) or 0
+    if ep.intro and pos < ep.intro[1] then ep.skipped = false end
+    local from = (ep.credits and ep.credits[1] > dur * 0.6) and ep.credits[1] or (dur - 25)
+    if pos < from - 1 then ep.dismissed = false end
+end)
+
+-- PRO (keep-open) : la dernière image reste affichée, il n'y a pas de fin de fichier → on enchaîne quand même
+mp.observe_property('eof-reached', 'bool', function(_, eof)
+    if eof and series_on() and mp.get_property('keep-open', 'no') ~= 'no' then
+        mp.add_timeout(0.3, function() go_neighbor(1) end)
+    end
+end)
+
+local last_end = nil
 mp.register_event('end-file', function(e)
+    last_end = e.reason
     if e.reason ~= 'error' then return end
     err = explain_error(e)
     menu = nil
@@ -1530,7 +1725,10 @@ mp.set_property('idle', 'yes')
 mp.observe_property('idle-active', 'bool', function(_, idle)
     if not idle then return end
     mp.add_timeout(0.15, function()
-        if mp.get_property_native('idle-active') and played_something and not err then close_player() end
+        if mp.get_property_native('idle-active') and played_something and not err then
+            -- fin d'un épisode : on enchaîne sur le suivant au lieu de fermer
+            if last_end == 'eof' and series_on() then go_neighbor(1) else close_player() end
+        end
     end)
 end)
 
@@ -1540,6 +1738,14 @@ mp.add_forced_key_binding('PREV', 'ksh_prev_media', function() go_neighbor(-1) e
 mp.add_forced_key_binding('NEXT', 'ksh_next_media', function() go_neighbor(1) end)
 mp.add_forced_key_binding('MBTN_BACK', 'ksh_prev_mouse', function() go_neighbor(-1) end)
 mp.add_forced_key_binding('MBTN_FORWARD', 'ksh_next_mouse', function() go_neighbor(1) end)
+if not APERCU then
+    local function series_enter()
+        local st = series_state()
+        if st == 'intro' then skip_intro() elseif st == 'next' then next_episode() end
+    end
+    mp.add_forced_key_binding('ENTER', 'ksh_series_enter', series_enter)
+    mp.add_forced_key_binding('KP_ENTER', 'ksh_series_kpenter', series_enter)
+end
 mp.add_forced_key_binding('Ctrl+PGUP', 'ksh_chap_prev', function() chapter_step(-1) end)
 mp.add_forced_key_binding('Ctrl+PGDWN', 'ksh_chap_next', function() chapter_step(1) end)
 

@@ -95,11 +95,15 @@ public sealed class MpvPlayer : IDisposable
         Opt("sub-font", "Segoe UI Semibold");
 
         // --- Édition PRO : outils monteurs dans la barre (kshosc.lua) ---
+        // Barre : séries (« Passer l'intro », « Épisode suivant ») → analyse par ce même exe, résultats dans intros.json
+        var scriptOpts = $"kshosc-introexe={Quote(ExePath)},kshosc-introdb={Quote(Intros.DbPath)}";
+        if (Edition.IsPro)
+            scriptOpts += ",kshosc-pro=yes," +
+                $"kshosc-lutdir={Quote(Edition.LutFolder)}," +
+                $"kshosc-shotdir={Quote(Edition.CaptureFolder)}";
+        Opt("script-opts", scriptOpts);
         if (Edition.IsPro)
         {
-            Opt("script-opts", "kshosc-pro=yes," +
-                $"kshosc-lutdir={Quote(Edition.LutFolder)}," +
-                $"kshosc-shotdir={Quote(Edition.CaptureFolder)}");
             Opt("hr-seek", "yes");          // sauts toujours à l'image près
             Opt("keep-open", "yes");        // reste sur la dernière image en fin de fichier
             Opt("mf-fps", "24");            // cadence par défaut des séquences d'images
@@ -148,6 +152,9 @@ public sealed class MpvPlayer : IDisposable
     /// <summary>Petit message KSHFLIX dans la vidéo, sous la rangée du haut (kshosc.lua).</summary>
     public void Toast(string text, int seconds) =>
         Command("script-message-to", "kshosc", "ksh-toast", text, seconds.ToString(CultureInfo.InvariantCulture));
+
+    private static string ExePath =>
+        System.Reflection.Assembly.GetEntryAssembly()?.Location ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Edition.Name.Replace(" ", "") + ".exe");
 
     // Valeur protégée pour les listes d'options mpv (%longueur%texte)
     private static string Quote(string v) => $"%{Encoding.UTF8.GetByteCount(v)}%{v}";
