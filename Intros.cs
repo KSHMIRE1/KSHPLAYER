@@ -35,12 +35,13 @@ internal static class Intros
     private const double HeadSec = 420;         // début analysé : 7 min (l'intro arrive presque toujours avant)
     private const double TailSec = 240;         // fin analysée : 4 min
     private const int MinFrames = 150;          // passage commun d'au moins 15 s
+    private const int PieceFrames = 30;         // morceaux recollés : 3 s minimum chacun
     private const int MaxIntroFrames = 1800;    // une intro dure au plus 3 min
     private const int MaxGap = 20;              // trous tolérés dans un passage commun (2 s : bruitages, dialogues par-dessus)
     private const int MaxBits = 10;             // empreintes « identiques » : au plus 10 bits différents sur 32
     private const int FpVersion = 1;
 
-    public static readonly string DbPath = Path.Combine(AppLog.Folder, "intros.json");
+    public static readonly string DbPath = Path.Combine(AppLog.Folder, "intros-v2.json");   // v2 : 1.3.1 (les « rien trouvé » de 1.3.0 sont refaits)
     private static readonly string FpFolder = Path.Combine(AppLog.Folder, "empreintes");
 
     public static int Run(string[] args)
@@ -128,19 +129,24 @@ internal static class Intros
 
     internal static (int a0, int a1, int b0, int b1)? Match(Fp[] A, Fp[] B, int maxFrames)
     {
-        int bestLen = 0;
-        (int, int, int, int)? best = null;
+        // 1) pour chaque décalage, les passages communs (≥ 3 s), en tolérant ±0,1 s de glissement
+        var runs = new List<(int a0, int a1, int d, int hits)>();
         var sum = new int[A.Length + 1];                          // sum[k] = nombre d'images identiques avant k
         for (int d = -(B.Length - 1); d < A.Length; d++)       // A[i] face à B[i - d]
         {
             int i0 = Math.Max(0, d), i1 = Math.Min(A.Length, B.Length + d), len = i1 - i0;
-            if (len < MinFrames) continue;
+            if (len < PieceFrames) continue;
             for (int k = 0; k < len; k++)
             {
-                var x = A[i0 + k]; var y = B[i0 + k - d];
-                sum[k + 1] = sum[k] + (x.Ok && y.Ok && PopCount(x.Hash ^ y.Hash) <= MaxBits ? 1 : 0);
+                var x = A[i0 + k];
+                int j = i0 + k - d;
+                bool same = false;
+                if (x.Ok)
+                    for (int t = Math.Max(0, j - 1); t <= Math.Min(B.Length - 1, j + 1) && !same; t++)
+                        same = B[t].Ok && PopCount(x.Hash ^ B[t].Hash) <= MaxBits;
+                sum[k + 1] = sum[k] + (same ? 1 : 0);
             }
-            if (sum[len] * 2 < MinFrames) continue;
+            if (sum[len] * 2 < PieceFrames) continue;
             int Hits(int from, int to) => sum[Math.Min(len, Math.Max(0, to))] - sum[Math.Min(len, Math.Max(0, from))];
             bool Ok(int k) => sum[k + 1] != sum[k];
 
@@ -155,15 +161,44 @@ internal static class Intros
                 // sinon une ressemblance due au hasard juste avant l'intro l'allongerait de 1 à 2 s
                 while (s0 < last && Hits(s0, s0 + 10) < 6) { s0++; while (s0 < last && !Ok(s0)) s0++; }
                 while (last > s0 && Hits(last - 9, last + 1) < 6) { last--; while (last > s0 && !Ok(last)) last--; }
-                int n = last - s0 + 1;
-                if (n >= MinFrames && n <= maxFrames && Hits(s0, last + 1) * 2 >= n && n > bestLen)
-                {
-                    bestLen = n;
-                    best = (i0 + s0, i0 + last, i0 + s0 - d, i0 + last - d);
-                }
+                int n = last - s0 + 1, h = Hits(s0, last + 1);
+                if (n >= PieceFrames && h * 2 >= n) runs.Add((i0 + s0, i0 + last, d, h));
             }
         }
-        return best;
+
+        // 2) on recolle les morceaux d'un même passage : une coupe au montage le décale un peu (≤ 1,5 s)
+        //    d'un épisode à l'autre, ce qui le coupait en morceaux trop courts (How to Sell Drugs Online Fast)
+        runs.Sort((x, y) => x.a0.CompareTo(y.a0));
+        var segs = new List<int[]>();                          // { a0, a1, d au début, d à la fin }
+        foreach (var r in runs)
+        {
+            int[]? seg = null;
+            foreach (var g in segs)
+                if (r.a0 <= g[1] + 30 && r.a1 >= g[0] - 30 && Math.Abs(r.d - g[3]) <= 15) { seg = g; break; }
+            if (seg == null) { segs.Add(new[] { r.a0, r.a1, r.d, r.d }); continue; }
+            if (r.a0 < seg[0]) { seg[0] = r.a0; seg[2] = r.d; }
+            if (r.a1 > seg[1]) { seg[1] = r.a1; seg[3] = r.d; }
+        }
+        int[]? best = null;
+        foreach (var g in segs)
+        {
+            int n = g[1] - g[0] + 1;
+            if (n >= MinFrames && n <= maxFrames && (best == null || n > best[1] - best[0] + 1)) best = g;
+        }
+        if (best == null) return null;
+        return (best[0], best[1], best[0] - best[2], best[1] - best[3]);
+    }
+
+    /// <summary>Test : compare deux fichiers d'empreintes (.fp) et affiche intro / fin trouvées.</summary>
+    internal static int CompareFiles(string fa, string fb)
+    {
+        var a = ReadPrint(fa); var b = ReadPrint(fb);
+        if (a == null || b == null) { Console.WriteLine("empreinte illisible"); return 2; }
+        var h = Match(a.Head, b.Head, MaxIntroFrames);
+        var t = Match(a.Tail, b.Tail, int.MaxValue);
+        Console.WriteLine("intro " + (h is { } x ? Show(Span(a.HeadStart, x.a0, x.a1)) + " / " + Show(Span(b.HeadStart, x.b0, x.b1)) : "aucune"));
+        Console.WriteLine("fin " + (t is { } y ? Show(Span(a.TailStart, y.a0, y.a1)) + " / " + Show(Span(b.TailStart, y.b0, y.b1)) : "aucune"));
+        return 0;
     }
 
     private static int PopCount(uint v)
