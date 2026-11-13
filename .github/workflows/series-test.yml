@@ -36,11 +36,11 @@ jobs:
           { tail -5 build.txt; cat run.txt; python3 .github/series-test/check.py "$DB"; cat "$HOME/.local/share/KSHPLAYER/kshplayer.log"; } > rep.txt 2>&1
           echo "::notice title=detection linux::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' rep.txt)"
           python3 .github/series-test/check.py "$DB"
-      - name: Vraies empreintes (How to Sell Drugs Online Fast E06 / E05) — intro vers 130–152 s
+      - name: Vraies empreintes (How to Sell Drugs Online Fast E06 / E05) — intro vers 115–146 s
         run: |
           bin/introstest --compare .github/series-test/reel/htsdof-e06.fp .github/series-test/reel/htsdof-e05.fp > reel.txt 2>&1
           echo "::notice title=vraie serie::$(sed ':a;N;$!ba;s/\n/%0A/g' reel.txt)"
-          grep -qE "intro 1[23][0-9]\.[0-9]–1[45][0-9]\.[0-9] s" reel.txt
+          grep -qE "intro 11[0-9]\.[0-9]–14[0-9]\.[0-9] s" reel.txt
       - name: Lecteur (barre) — Entrée passe l'intro, épisode suivant tout seul
         run: |
           rm -f "$HOME/.local/share/KSHPLAYER/intros-v2.json"     # la barre doit relancer l'analyse elle-même

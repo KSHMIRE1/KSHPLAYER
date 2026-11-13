@@ -157,10 +157,10 @@ internal static class Intros
                 int s0 = pos, last = pos;
                 for (pos++; pos < len && pos - last <= MaxGap; pos++)
                     if (Ok(pos)) last = pos;
-                // bords nets : un début (une fin) doit être suivi (précédé) d'un passage dense, 6 images sur 10,
+                // bords nets : un début (une fin) doit être suivi (précédé) d'un passage dense, 5 images sur 10,
                 // sinon une ressemblance due au hasard juste avant l'intro l'allongerait de 1 à 2 s
-                while (s0 < last && Hits(s0, s0 + 10) < 6) { s0++; while (s0 < last && !Ok(s0)) s0++; }
-                while (last > s0 && Hits(last - 9, last + 1) < 6) { last--; while (last > s0 && !Ok(last)) last--; }
+                while (s0 < last && Hits(s0, s0 + 10) < 5) { s0++; while (s0 < last && !Ok(s0)) s0++; }
+                while (last > s0 && Hits(last - 9, last + 1) < 5) { last--; while (last > s0 && !Ok(last)) last--; }
                 int n = last - s0 + 1, h = Hits(s0, last + 1);
                 if (n >= PieceFrames && h * 2 >= n) runs.Add((i0 + s0, i0 + last, d, h));
             }
