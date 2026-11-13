@@ -1,1 +1,1 @@
-Séries : bouton « Passer l'intro » et « Épisode suivant » automatiques (comme Netflix) · boutons Précédent / Suivant toujours visibles · barre plus petite
+Séries : détection de l'intro bien plus fiable (intro décalée, voix off par-dessus, longue scène avant) · noms « Série 03 » reconnus

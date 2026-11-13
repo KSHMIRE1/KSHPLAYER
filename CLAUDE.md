@@ -8,7 +8,7 @@ Plateformes : **Windows** (principal) + **Mac** (Apple Silicon + Intel, macOS 13
 L'utilisateur parle **français**, n'est pas développeur : réponses simples, concrètes, sans jargon.
 Priorité absolue : **performances** (« je veux surtout pas qu'il ne soit pas performant ») et rendu adapté à chaque PC.
 
-Version publiée : voir `VERSION` — **1.3.0 publiée le 2026-11-13** (séries : passer l'intro, épisode suivant ; 1.2.0 = travail de Romain, voir § 3 bis).
+Version publiée : voir `VERSION` — **1.3.1 publiée le 2026-11-13** (séries : passer l'intro, épisode suivant ; 1.2.0 = travail de Romain, voir § 3 bis).
 
 **Priorité actuelle (oct. 2026) : la version Windows** (normal + PRO). Le Mac suit via `kshosc.lua` partagé —
 toute modif de `mpv/scripts/kshosc.lua` touche aussi le Mac : garder `MAC`/`opts.platform` en tête.
