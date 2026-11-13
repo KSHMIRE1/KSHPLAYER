@@ -40,7 +40,11 @@ foreach ($e in $editions) {
         Invoke-WebRequest ("$base/" + [Uri]::EscapeDataString($e.Setup) + "?v=" + $info.version) -OutFile $file -TimeoutSec 600
         $got = V (Get-Item $file).VersionInfo.FileVersion
         if ($got -ne $latest) { Log "$($e.Name) : installateur téléchargé en $got au lieu de $latest, on réessaiera"; continue }
-        Start-Process -FilePath $file -ArgumentList '/update' -Wait
+        # pas de -Wait : il attendrait aussi l'aperçu Espace relancé par l'installateur (qui tourne en permanence)
+        $setup = Start-Process -FilePath $file -ArgumentList '/update' -PassThru
+        if (-not $setup.WaitForExit(600000)) { Log "$($e.Name) : l'installateur n'a pas fini en 10 min"; continue }
+        $now = V (Get-Item $exe).VersionInfo.FileVersion
+        if ($now -ne $latest) { Log "$($e.Name) : toujours en $now après l'installateur"; continue }
         Log "$($e.Name) $have → $latest : mis à jour"
     } catch { Log "$($e.Name) : mise à jour impossible ($($_.Exception.Message))" }
 }
