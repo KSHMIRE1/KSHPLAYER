@@ -34,7 +34,7 @@ jobs:
           ln -sf /usr/lib/x86_64-linux-gnu/libmpv.so.2 bin/libmpv-2.dll
           S="$PWD/serie/Ma Serie"
           bin/introstest --intros "$S S01E02.mkv" "$S S01E01.mkv" "$S S01E03.mkv" > run.txt 2>&1; echo "code $?" >> run.txt
-          DB="$HOME/.local/share/KSHPLAYER/intros-v2.json"
+          DB="$HOME/.local/share/KSHPLAYER/intros-v3.json"
           { tail -5 build.txt; cat run.txt; python3 .github/series-test/check.py "$DB"; cat "$HOME/.local/share/KSHPLAYER/kshplayer.log"; } > rep.txt 2>&1
           echo "::notice title=detection linux::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' rep.txt)"
           python3 .github/series-test/check.py "$DB"
@@ -42,7 +42,7 @@ jobs:
         run: |
           A="$PWD/autre/Autre Serie"
           bin/introstest --intros "$A S01E02.mkv" "$A S01E01.mkv" "" > img.txt 2>&1
-          python3 .github/series-test/check_image.py "$HOME/.local/share/KSHPLAYER/intros-v2.json" >> img.txt 2>&1; r=$?
+          python3 .github/series-test/check_image.py "$HOME/.local/share/KSHPLAYER/intros-v3.json" >> img.txt 2>&1; r=$?
           grep -i "autre\|image" "$HOME/.local/share/KSHPLAYER/kshplayer.log" >> img.txt
           echo "::notice title=generique image linux::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' img.txt)"; exit $r
       - name: Vraies empreintes (How to Sell Drugs Online Fast E06 / E05) — intro vers 115–146 s
@@ -52,12 +52,12 @@ jobs:
           grep -qE "intro 11[0-9]\.[0-9]–14[0-9]\.[0-9] s" reel.txt
       - name: Lecteur (barre) — Entrée passe l'intro, épisode suivant tout seul
         run: |
-          rm -f "$HOME/.local/share/KSHPLAYER/intros-v2.json"     # la barre doit relancer l'analyse elle-même
+          rm -f "$HOME/.local/share/KSHPLAYER/intros-v3.json"     # la barre doit relancer l'analyse elle-même
           mkdir -p shots
           xvfb-run -s "-screen 0 1280x720x24" timeout 240 mpv --config-dir="$PWD/mpv" --vo=gpu-next --gpu-api=opengl \
             --gpu-context=x11egl --gpu-sw --hwdec=no --ao=null --geometry=960x540 --no-border --osc=no \
             --script="$PWD/mpv/scripts/kshosc.lua" --script="$PWD/.github/series-test/play.lua" \
-            --script-opts="kshosc-introexe=$PWD/bin/introstest,kshosc-introdb=$HOME/.local/share/KSHPLAYER/intros-v2.json,out=$PWD/play.txt,shots=$PWD/shots" \
+            --script-opts="kshosc-introexe=$PWD/bin/introstest,kshosc-introdb=$HOME/.local/share/KSHPLAYER/intros-v3.json,out=$PWD/play.txt,shots=$PWD/shots" \
             --msg-level=all=warn,kshosc=info --log-file=mpv.log "$PWD/serie/Ma Serie S01E01.mkv" || true
           { cat play.txt; grep -E "kshosc|\]\[e\]" mpv.log | grep -v ytdl | cut -c1-200 | head -25; ls shots; } > rep2.txt 2>&1
           echo "::notice title=lecteur::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' rep2.txt)"
@@ -93,7 +93,7 @@ jobs:
           $exe = (Get-ChildItem -Recurse bin -Filter KSHPLAYER.exe | Select-Object -First 1).FullName
           $s = "$PWD\serie\Ma Serie"
           $t = Measure-Command { $p = Start-Process -FilePath $exe -ArgumentList "--intros `"$s S01E02.mkv`" `"$s S01E01.mkv`" `"$s S01E03.mkv`"" -Wait -PassThru }
-          $db = "$env:LOCALAPPDATA\KSHPLAYER\intros-v2.json"
+          $db = "$env:LOCALAPPDATA\KSHPLAYER\intros-v3.json"
           $rep = "code $($p.ExitCode) en $([math]::Round($t.TotalSeconds,1)) s`n" + (python .github/series-test/check.py $db | Out-String) + (Get-Content "$env:LOCALAPPDATA\KSHPLAYER\kshplayer.log" -ErrorAction SilentlyContinue | Out-String)
           "::notice title=detection windows::$($rep -replace '%','%25' -replace "`r",'' -replace "`n",'%0A')"
           python .github/series-test/check.py $db

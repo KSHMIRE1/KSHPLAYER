@@ -41,7 +41,7 @@ internal static class Intros
     private const int MaxBits = 10;             // empreintes « identiques » : au plus 10 bits différents sur 32
     private const int FpVersion = 3;              // 2 : début sur 10 min (1.3.1) · 3 : générique vu à l'image (1.3.2)
 
-    public static readonly string DbPath = Path.Combine(AppLog.Folder, "intros-v2.json");   // v2 : 1.3.1 (les « rien trouvé » de 1.3.0 sont refaits)
+    public static readonly string DbPath = Path.Combine(AppLog.Folder, "intros-v3.json");   // v3 : 1.3.2 (générique vu à l'image : les fins « rien trouvé » sont refaites)
     private static readonly string FpFolder = Path.Combine(AppLog.Folder, "empreintes");
 
     public static int Run(string[] args)

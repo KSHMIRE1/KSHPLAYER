@@ -329,7 +329,7 @@ end
 -- Où sont l'intro et le générique de fin ?
 --   1. chapitres du fichier nommés « Intro », « Opening », « Générique », « Credits »… (Mac et Windows)
 --   2. sinon (Windows) : KSHPLAYER.exe --intros compare le son de deux épisodes voisins (voir Intros.cs),
---      en arrière-plan, et range le résultat dans intros-v2.json ; le suivant est préparé à l'avance.
+--      en arrière-plan, et range le résultat dans intros-v3.json ; le suivant est préparé à l'avance.
 local ep = { path = nil, intro = nil, credits = nil, src = nil, dismissed = false, asked = {}, skipped = false }
 
 local function episode_like(name)
@@ -455,7 +455,7 @@ local function series_state()
     if not pos then return nil end
     if ep.intro and not ep.skipped and pos >= ep.intro[1] and pos < ep.intro[2] - 1 then return 'intro' end
     if series_on() and dur >= 300 and not ep.dismissed then
-        local from = (ep.credits and ep.credits[1] > dur * 0.6) and ep.credits[1] or (dur - 25)
+        local from = (ep.credits and ep.credits[1] > dur * 0.6) and ep.credits[1] or (dur - 45)
         if pos >= from then return 'next', from, ep.credits ~= nil end
     end
     return nil
@@ -1702,7 +1702,7 @@ mp.register_event('seek', function()
     local pos = mp.get_property_number('time-pos', 0) or 0
     local dur = mp.get_property_number('duration', 0) or 0
     if ep.intro and pos < ep.intro[1] then ep.skipped = false end
-    local from = (ep.credits and ep.credits[1] > dur * 0.6) and ep.credits[1] or (dur - 25)
+    local from = (ep.credits and ep.credits[1] > dur * 0.6) and ep.credits[1] or (dur - 45)
     if pos < from - 1 then ep.dismissed = false end
 end)
 
