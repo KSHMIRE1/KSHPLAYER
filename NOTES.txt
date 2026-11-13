@@ -1,1 +1,1 @@
-Séries : détection de l'intro bien plus fiable (intro décalée, voix off par-dessus, longue scène avant) · noms « Série 03 » reconnus
+Séries : « Épisode suivant » dès le générique de fin, même quand sa musique change (détecté à l'image) · sinon 45 s avant la fin
