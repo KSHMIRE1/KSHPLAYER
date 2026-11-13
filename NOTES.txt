@@ -1,1 +1,1 @@
-Plus d'écran d'accueil : la vidéo s'ouvre tout de suite · aperçu à la barre Espace · vidéo précédente / suivante (Pg préc. / Pg suiv.) · message clair si un fichier ne se lit pas · plus léger
+Séries : bouton « Passer l'intro » et « Épisode suivant » automatiques (comme Netflix) · boutons Précédent / Suivant toujours visibles · barre plus petite
