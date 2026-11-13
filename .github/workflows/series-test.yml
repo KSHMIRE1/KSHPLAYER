@@ -5,6 +5,8 @@ on:
   push:
     branches: [series-test]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   linux:
     runs-on: ubuntu-24.04
@@ -47,11 +49,11 @@ jobs:
           grep -q "episode suivant : .*S01E02" play.txt
           python3 .github/series-test/pixels.py shots > px.txt 2>&1; r=$?
           echo "::notice title=dessin::$(sed ':a;N;$!ba;s/\n/%0A/g' px.txt)"; exit $r
-      - uses: actions/upload-artifact@v5
+      - name: Captures → branche test-captures (lisibles sans télécharger d'artefact)
         if: always()
-        with:
-          name: captures
-          path: shots/*.png
+        run: |
+          cd shots && git init -q -b test-captures && git add . && git -c user.name=CI -c user.email=ci@local commit -qm captures
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" test-captures
 
   windows:
     needs: linux
