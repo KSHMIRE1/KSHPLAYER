@@ -24,7 +24,9 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: serie
-          path: serie/*.mkv
+          path: |
+            serie/*.mkv
+            autre/*.mkv
       - name: Détection (Intros.cs)
         run: |
           set +e
@@ -36,6 +38,13 @@ jobs:
           { tail -5 build.txt; cat run.txt; python3 .github/series-test/check.py "$DB"; cat "$HOME/.local/share/KSHPLAYER/kshplayer.log"; } > rep.txt 2>&1
           echo "::notice title=detection linux::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' rep.txt)"
           python3 .github/series-test/check.py "$DB"
+      - name: Générique vu à l'image (musique de fin différente)
+        run: |
+          A="$PWD/autre/Autre Serie"
+          bin/introstest --intros "$A S01E02.mkv" "$A S01E01.mkv" "" > img.txt 2>&1
+          python3 .github/series-test/check_image.py "$HOME/.local/share/KSHPLAYER/intros-v2.json" >> img.txt 2>&1; r=$?
+          grep -i "autre\|image" "$HOME/.local/share/KSHPLAYER/kshplayer.log" >> img.txt
+          echo "::notice title=generique image linux::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' img.txt)"; exit $r
       - name: Vraies empreintes (How to Sell Drugs Online Fast E06 / E05) — intro vers 115–146 s
         run: |
           bin/introstest --compare .github/series-test/reel/htsdof-e06.fp .github/series-test/reel/htsdof-e05.fp > reel.txt 2>&1
@@ -88,4 +97,10 @@ jobs:
           $rep = "code $($p.ExitCode) en $([math]::Round($t.TotalSeconds,1)) s`n" + (python .github/series-test/check.py $db | Out-String) + (Get-Content "$env:LOCALAPPDATA\KSHPLAYER\kshplayer.log" -ErrorAction SilentlyContinue | Out-String)
           "::notice title=detection windows::$($rep -replace '%','%25' -replace "`r",'' -replace "`n",'%0A')"
           python .github/series-test/check.py $db
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $a = "$PWD\autre\Autre Serie"
+          $p2 = Start-Process -FilePath $exe -ArgumentList "--intros `"$a S01E02.mkv`" `"$a S01E01.mkv`" `"`"" -Wait -PassThru
+          $rep2 = (python .github/series-test/check_image.py $db | Out-String) + (Get-Content "$env:LOCALAPPDATA\KSHPLAYER\kshplayer.log" | Select-String "Autre|image" | Out-String)
+          "::notice title=generique image windows::$($rep2 -replace '%','%25' -replace "`r",'' -replace "`n",'%0A')"
+          python .github/series-test/check_image.py $db
           exit $LASTEXITCODE

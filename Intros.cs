@@ -39,7 +39,7 @@ internal static class Intros
     private const int MaxIntroFrames = 1800;    // une intro dure au plus 3 min
     private const int MaxGap = 20;              // trous tolérés dans un passage commun (2 s : bruitages, dialogues par-dessus)
     private const int MaxBits = 10;             // empreintes « identiques » : au plus 10 bits différents sur 32
-    private const int FpVersion = 2;              // 2 : début sur 10 min (1.3.1)
+    private const int FpVersion = 3;              // 2 : début sur 10 min (1.3.1) · 3 : générique vu à l'image (1.3.2)
 
     public static readonly string DbPath = Path.Combine(AppLog.Folder, "intros-v2.json");   // v2 : 1.3.1 (les « rien trouvé » de 1.3.0 sont refaits)
     private static readonly string FpFolder = Path.Combine(AppLog.Folder, "empreintes");
@@ -112,6 +112,9 @@ internal static class Intros
             ea.Credits = Span(a.TailStart, t.a0, t.a1);
             eb.Credits ??= Span(b.TailStart, t.b0, t.b1);
         }
+        // musique de fin différente à chaque épisode (fréquent chez Netflix) : le générique vu à l'image
+        if (ea.Credits == null && a.CreditsByImage > 0) ea.Credits = new[] { Math.Round(a.CreditsByImage, 1), Math.Round(a.Duration, 1) };
+        if (eb.Credits == null && b.CreditsByImage > 0) eb.Credits = new[] { Math.Round(b.CreditsByImage, 1), Math.Round(b.Duration, 1) };
         db[Key(file)] = ea;
         db[Key(partner)] = eb;
         AppLog.Write($"Génériques de {Path.GetFileName(file)} : intro {Show(ea.Intro)}, fin {Show(ea.Credits)} (comparé à {Path.GetFileName(partner)})");
@@ -198,6 +201,7 @@ internal static class Intros
         var t = Match(a.Tail, b.Tail, int.MaxValue);
         Console.WriteLine("intro " + (h is { } x ? Show(Span(a.HeadStart, x.a0, x.a1)) + " / " + Show(Span(b.HeadStart, x.b0, x.b1)) : "aucune"));
         Console.WriteLine("fin " + (t is { } y ? Show(Span(a.TailStart, y.a0, y.a1)) + " / " + Show(Span(b.TailStart, y.b0, y.b1)) : "aucune"));
+        Console.WriteLine(string.Format(CultureInfo.InvariantCulture, "fin a l'image {0:0.0} / {1:0.0}", a.CreditsByImage, b.CreditsByImage));
         return 0;
     }
 
@@ -216,6 +220,8 @@ internal static class Intros
     {
         public double HeadStart, TailStart;
         public Fp[] Head = Array.Empty<Fp>(), Tail = Array.Empty<Fp>();
+        public double Duration;
+        public double CreditsByImage = -1;   // début du générique vu à l'image (texte clair sur fond noir), -1 si aucun
     }
 
     private static Print? GetPrint(string file)
@@ -240,7 +246,9 @@ internal static class Intros
             p.TailStart = Math.Max(0, dur - tailLen);
             var tail = Decode(file, p.TailStart, tailLen, out _);
             if (tail != null) p.Tail = Fingerprint(tail);
+            p.CreditsByImage = CreditsFromImages(file, p.TailStart, tailLen);
         }
+        p.Duration = dur;
         AppLog.Write($"Empreinte de {Path.GetFileName(file)} : {sw.Elapsed.TotalSeconds:0.0} s");
         WritePrint(cache, p);
         return p;
@@ -420,6 +428,161 @@ internal static class Intros
         }
     }
 
+    // ---------- Générique de fin vu à l'image : texte clair sur fond noir ----------
+    // Une image par seconde de la fin (images clés seulement : rapide même en 4K), réduite à 64×36 en gris.
+    // Générique = image sombre à ≥ 70 % avec un peu de clair (le texte), ou noire. On cherche le moment à partir
+    // duquel au moins 85 % des images jusqu'à la fin ressemblent à ça, pendant au moins 15 s.
+
+    private const int ThumbW = 64, ThumbH = 36;
+
+    internal static double CreditsFromImages(string file, double start, double length)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"kshplayer-generique-{Process.GetCurrentProcess().Id}");
+        try
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            Directory.CreateDirectory(dir);
+            var ctx = mpv_create();
+            if (ctx == IntPtr.Zero) return -1;
+            try
+            {
+                void O(string k, string v) => mpv_set_option_string(ctx, k, v);
+                O("config", "no"); O("terminal", "no"); O("load-scripts", "no"); O("ytdl", "no"); O("osc", "no");
+                O("input-default-bindings", "no"); O("idle", "no");
+                O("aid", "no"); O("sid", "no"); O("ao", "null");
+                O("hwdec", "no");
+                O("vd-lavc-skipframe", "nonkey");     // seulement les images clés : quelques dizaines à décoder
+                O("vf", string.Format(CultureInfo.InvariantCulture,
+                    "lavfi=[fps=fps=1:start_time={0:0.###},scale={1}:{2},format=gray]", start, ThumbW, ThumbH));
+                O("vo", "image");
+                O("vo-image-format", "png");
+                O("vo-image-png-compression", "0");
+                O("vo-image-outdir", dir);
+                O("untimed", "yes");
+                O("hr-seek", "no");
+                O("start", start.ToString("0.###", CultureInfo.InvariantCulture));
+                O("length", length.ToString("0.###", CultureInfo.InvariantCulture));
+                if (mpv_initialize(ctx) < 0 || !LoadFile(ctx, file)) return -1;
+                var sw = Stopwatch.StartNew();
+                bool ended = false;
+                while (!ended && sw.Elapsed < TimeSpan.FromMinutes(3))
+                {
+                    var ptr = mpv_wait_event(ctx, 1);
+                    if (ptr == IntPtr.Zero) continue;
+                    var ev = (MpvEvent)Marshal.PtrToStructure(ptr, typeof(MpvEvent))!;
+                    if (ev.EventId == MPV_EVENT_END_FILE || ev.EventId == MPV_EVENT_SHUTDOWN) ended = true;
+                }
+            }
+            finally { mpv_terminate_destroy(ctx); }
+
+            var files = Directory.GetFiles(dir, "*.png");
+            Array.Sort(files, StringComparer.Ordinal);            // 00000001.png, 00000002.png… = une par seconde
+            var kinds = new int[files.Length];                    // 1 générique · 0 noir · -1 image normale
+            for (int i = 0; i < files.Length; i++) kinds[i] = Classify(ReadGrayPng(files[i]));
+            return CreditsStart(kinds, start);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Générique à l'image : " + Path.GetFileName(file), ex);
+            return -1;
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    internal static int Classify(byte[]? g)
+    {
+        if (g == null || g.Length == 0) return -1;
+        int dark = 0, light = 0; long sum = 0;
+        foreach (var v in g) { sum += v; if (v < 30) dark++; if (v > 90) light++; }
+        double n = g.Length;
+        if (sum / n < 6) return 0;                                       // écran noir
+        return dark / n >= 0.70 && light / n >= 0.004 && light / n <= 0.30 ? 1 : -1;
+    }
+
+    internal static double CreditsStart(int[] kinds, double start)
+    {
+        int n = kinds.Length;
+        if (n < 15) return -1;
+        // depuis la fin : la plus longue fin d'épisode où ≥ 85 % des images sont « générique » (ou noires)
+        int best = -1, good = 0, credits = 0;
+        for (int k = n - 1; k >= 0; k--)
+        {
+            if (kinds[k] >= 0) good++;
+            if (kinds[k] == 1) credits++;
+            int len = n - k;
+            if (kinds[k] == 1 && len >= 15 && good >= 0.85 * len && credits >= 0.5 * len) best = k;
+        }
+        return best < 0 ? -1 : start + best;
+    }
+
+    /// <summary>Lit un PNG 8 bits (gris, gris+alpha, RVB ou RVBA) et le rend en niveaux de gris.</summary>
+    internal static byte[]? ReadGrayPng(string path)
+    {
+        var data = File.ReadAllBytes(path);
+        if (data.Length < 8 || data[0] != 0x89 || data[1] != (byte)'P') return null;
+        int w = 0, h = 0, depth = 0, type = 0, pos = 8;
+        var idat = new MemoryStream();
+        while (pos + 8 <= data.Length)
+        {
+            int len = (data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
+            string tag = Encoding.ASCII.GetString(data, pos + 4, 4);
+            int body = pos + 8;
+            if (tag == "IHDR")
+            {
+                w = (data[body] << 24) | (data[body + 1] << 16) | (data[body + 2] << 8) | data[body + 3];
+                h = (data[body + 4] << 24) | (data[body + 5] << 16) | (data[body + 6] << 8) | data[body + 7];
+                depth = data[body + 8]; type = data[body + 9];
+            }
+            else if (tag == "IDAT") idat.Write(data, body, len);
+            else if (tag == "IEND") break;
+            pos = body + len + 4;
+        }
+        int ch = type switch { 0 => 1, 4 => 2, 2 => 3, 6 => 4, _ => 0 };
+        if (depth != 8 || ch == 0 || w <= 0 || h <= 0) return null;
+        idat.Position = 2;                                     // en-tête zlib
+        var raw = new byte[(w * ch + 1) * h];
+        using (var z = new System.IO.Compression.DeflateStream(idat, System.IO.Compression.CompressionMode.Decompress))
+        {
+            int got = 0, r;
+            while (got < raw.Length && (r = z.Read(raw, got, raw.Length - got)) > 0) got += r;
+        }
+        int stride = w * ch;
+        var img = new byte[stride * h];
+        for (int y = 0; y < h; y++)
+        {
+            int f = raw[y * (stride + 1)], src = y * (stride + 1) + 1, dst = y * stride;
+            for (int x = 0; x < stride; x++)
+            {
+                int a = x >= ch ? img[dst + x - ch] : 0;
+                int b = y > 0 ? img[dst - stride + x] : 0;
+                int c = (x >= ch && y > 0) ? img[dst - stride + x - ch] : 0;
+                int v = raw[src + x];
+                switch (f)
+                {
+                    case 1: v += a; break;
+                    case 2: v += b; break;
+                    case 3: v += (a + b) / 2; break;
+                    case 4:
+                        int p = a + b - c, pa = Math.Abs(p - a), pb = Math.Abs(p - b), pc = Math.Abs(p - c);
+                        v += (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+                        break;
+                }
+                img[dst + x] = (byte)v;
+            }
+        }
+        if (ch == 1) return img;
+        var gray = new byte[w * h];
+        for (int i = 0; i < gray.Length; i++)
+        {
+            int o = i * ch;
+            gray[i] = ch == 2 ? img[o] : (byte)((img[o] * 77 + img[o + 1] * 150 + img[o + 2] * 29) >> 8);
+        }
+        return gray;
+    }
+
     // ---------- Cache des empreintes ----------
 
     private static Print? ReadPrint(string path, bool anyVersion = false)
@@ -428,10 +591,12 @@ internal static class Intros
         {
             if (!File.Exists(path)) return null;
             using var r = new BinaryReader(File.OpenRead(path));
-            if (r.ReadInt32() != FpVersion && !anyVersion) return null;   // même format, seule la longueur analysée change
+            int v = r.ReadInt32();
+            if (v != FpVersion && !anyVersion) return null;
             var p = new Print { HeadStart = r.ReadDouble(), TailStart = r.ReadDouble() };
             p.Head = ReadFps(r);
             p.Tail = ReadFps(r);
+            if (v >= 3) { p.Duration = r.ReadDouble(); p.CreditsByImage = r.ReadDouble(); }
             return p;
         }
         catch { return null; }
@@ -456,6 +621,7 @@ internal static class Intros
                 w.Write(arr.Length);
                 foreach (var f in arr) { w.Write(f.Hash); w.Write(f.Ok); }
             }
+            w.Write(p.Duration); w.Write(p.CreditsByImage);
         }
         catch (Exception ex) { AppLog.Write("Empreinte non enregistrée", ex); }
     }

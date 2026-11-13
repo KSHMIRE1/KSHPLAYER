@@ -49,3 +49,23 @@ for i, (name, (a, total, c, codec, rate)) in enumerate(plans.items()):
         "-c:a", codec, "-ar", rate, "-ac", "2", "-b:a", "128k", "-shortest", os.path.join(out, name + ".mkv")])
     os.remove(raw)
 print("ok")
+
+# --- 2e série : musique de fin différente à chaque épisode, générique = texte clair sur fond noir ---
+out2 = os.path.join(os.path.dirname(out), "autre")
+os.makedirs(out2, exist_ok=True)
+for i, (name, total, c) in enumerate((("Autre Serie S01E01", 420, 350), ("Autre Serie S01E02", 410, 336))):
+    sig = content(200 + i, total)
+    pcm = (np.clip(sig, -1, 1) * 32000).astype("<i2")
+    raw = os.path.join(out2, "tmp.raw")
+    pcm.tofile(raw)
+    bars = ",".join(f"drawbox=x={90 + (k * 37) % 60}:y={30 + k * 26}:w=140:h=10:color=white:t=fill" for k in range(5))
+    vf = (f"[0:v]trim=0:{c},setpts=PTS-STARTPTS[a];[1:v]{bars},trim=0:{total - c},setpts=PTS-STARTPTS[b];"
+          f"[a][b]concat=n=2:v=1:a=0,format=yuv420p[v]")
+    subprocess.check_call(["ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", f"testsrc2=s=320x180:r=10:d={total}",
+        "-f", "lavfi", "-i", f"color=c=black:s=320x180:r=10:d={total}",
+        "-f", "s16le", "-ar", str(R), "-ac", "1", "-i", raw,
+        "-filter_complex", vf, "-map", "[v]", "-map", "2:a", "-c:v", "libx264", "-preset", "ultrafast", "-g", "20",
+        "-c:a", "aac", "-shortest", os.path.join(out2, name + ".mkv")])
+    os.remove(raw)
+print("ok autre")
