@@ -80,7 +80,7 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           name: serie
-          path: serie
+          path: .
       - name: Compiler KSHPLAYER (.NET Framework 4.8)
         shell: pwsh
         run: |
