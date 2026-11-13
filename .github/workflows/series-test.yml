@@ -27,12 +27,13 @@ jobs:
           path: serie/*.mkv
       - name: Détection (Intros.cs)
         run: |
-          dotnet build .github/series-test/IntrosTest.csproj -c Release -o "$PWD/bin" -v q -nologo 2>&1 | tail -5
+          set +e
+          dotnet build .github/series-test/IntrosTest.csproj -c Release -o "$PWD/bin" -v q -nologo > build.txt 2>&1
           ln -sf /usr/lib/x86_64-linux-gnu/libmpv.so.2 bin/libmpv-2.dll
           S="$PWD/serie/Ma Serie"
-          time bin/introstest --intros "$S S01E02.mkv" "$S S01E01.mkv" "$S S01E03.mkv"; echo "code $?"
+          bin/introstest --intros "$S S01E02.mkv" "$S S01E01.mkv" "$S S01E03.mkv" > run.txt 2>&1; echo "code $?" >> run.txt
           DB="$HOME/.local/share/KSHPLAYER/intros.json"
-          { python3 .github/series-test/check.py "$DB"; cat "$HOME/.local/share/KSHPLAYER/kshplayer.log"; } > rep.txt 2>&1; r=$?
+          { tail -5 build.txt; cat run.txt; python3 .github/series-test/check.py "$DB"; cat "$HOME/.local/share/KSHPLAYER/kshplayer.log"; } > rep.txt 2>&1
           echo "::notice title=detection linux::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' rep.txt)"
           python3 .github/series-test/check.py "$DB"
       - name: Lecteur (barre) — Entrée passe l'intro, épisode suivant tout seul
@@ -52,6 +53,7 @@ jobs:
       - name: Captures → branche test-captures (lisibles sans télécharger d'artefact)
         if: always()
         run: |
+          mkdir -p shots; touch shots/vide
           cd shots && git init -q -b test-captures && git add . && git -c user.name=CI -c user.email=ci@local commit -qm captures
           git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" test-captures
 
