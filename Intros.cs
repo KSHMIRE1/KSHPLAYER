@@ -191,7 +191,12 @@ internal static class Intros
 
         var sw = Stopwatch.StartNew();
         var head = Decode(file, 0, HeadSec, out double dur);
-        if (head == null || dur <= 0) return null;
+        if (head == null || dur <= 0) head = Decode(file, 0, HeadSec, out dur);     // 2e essai (disque réseau lent…)
+        if (head == null || dur <= 0)
+        {
+            AppLog.Write($"Empreinte impossible : {Path.GetFileName(file)} (son {(head == null ? "illisible" : "ok")}, durée {dur:0.#} s)");
+            return null;
+        }
         p = new Print { HeadStart = 0, Head = Fingerprint(head) };
         // fin : seulement si l'épisode est assez long pour ne pas relire le début
         double tailLen = Math.Min(TailSec, dur * 0.3);
@@ -310,8 +315,9 @@ internal static class Intros
             O("hr-seek", "yes");
             O("start", start.ToString("0.###", CultureInfo.InvariantCulture));
             O("length", length.ToString("0.###", CultureInfo.InvariantCulture));
-            if (mpv_initialize(ctx) < 0) return null;
-            if (!LoadFile(ctx, file)) return null;
+            if (mpv_initialize(ctx) < 0) { AppLog.Write("Analyse : moteur non initialisé"); return null; }
+            mpv_observe_property(ctx, 1, "duration", MPV_FORMAT_DOUBLE);   // la durée arrive quand elle est connue
+            if (!LoadFile(ctx, file)) { AppLog.Write("Analyse : ouverture refusée " + file); return null; }
 
             var sw = Stopwatch.StartNew();
             bool ended = false;
@@ -320,17 +326,18 @@ internal static class Intros
                 var p = mpv_wait_event(ctx, 1);
                 if (p == IntPtr.Zero) continue;
                 var ev = (MpvEvent)Marshal.PtrToStructure(p, typeof(MpvEvent))!;
-                if (ev.EventId == MPV_EVENT_FILE_LOADED)
+                if (ev.EventId == MPV_EVENT_PROPERTY_CHANGE && ev.Data != IntPtr.Zero)
                 {
-                    var d = mpv_get_property_string(ctx, "duration");
-                    if (d != IntPtr.Zero)
+                    var prop = (MpvEventProperty)Marshal.PtrToStructure(ev.Data, typeof(MpvEventProperty))!;
+                    if (prop.Format == MPV_FORMAT_DOUBLE && prop.Data != IntPtr.Zero)
                     {
-                        double.TryParse(Utf8(d), NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
-                        mpv_free(d);
+                        double d = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(prop.Data));
+                        if (d > 0) duration = d;
                     }
                 }
                 else if (ev.EventId == MPV_EVENT_END_FILE || ev.EventId == MPV_EVENT_SHUTDOWN) ended = true;
             }
+            if (!ended) AppLog.Write("Analyse : délai dépassé " + file);
         }
         finally
         {
@@ -338,11 +345,13 @@ internal static class Intros
         }
         try
         {
-            if (!File.Exists(pcmFile)) return null;
+            if (!File.Exists(pcmFile)) { AppLog.Write("Analyse : aucun son décodé " + file); return null; }
             var bytes = File.ReadAllBytes(pcmFile);
             var pcm = new short[bytes.Length / 2];
             Buffer.BlockCopy(bytes, 0, pcm, 0, pcm.Length * 2);
-            return pcm.Length >= Rate * 20 ? pcm : null;   // moins de 20 s de son : rien à comparer
+            if (pcm.Length >= Rate * 20) return pcm;
+            AppLog.Write($"Analyse : son trop court ({pcm.Length / (double)Rate:0.#} s) " + file);   // rien à comparer
+            return null;
         }
         finally
         {
@@ -374,15 +383,6 @@ internal static class Intros
         {
             foreach (var p in ptrs) if (p != IntPtr.Zero) Marshal.FreeHGlobal(p);
         }
-    }
-
-    private static string Utf8(IntPtr p)
-    {
-        int n = 0;
-        while (Marshal.ReadByte(p, n) != 0) n++;
-        var b = new byte[n];
-        Marshal.Copy(p, b, 0, n);
-        return Encoding.UTF8.GetString(b);
     }
 
     // ---------- Cache des empreintes ----------
