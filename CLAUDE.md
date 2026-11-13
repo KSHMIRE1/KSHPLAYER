@@ -124,6 +124,7 @@ toute modif de `mpv/scripts/kshosc.lua` touche aussi le Mac : garder `MAC`/`opts
   - **Windows** (1.2) : pendant la lecture → téléchargement en arrière-plan → message dans la vidéo → `Setup /update` à la fermeture du lecteur. (1.1.x : bandeau « Mettre à jour » de l'accueil.)
   - **Mac** : bandeau « Télécharger » qui ouvre le .dmg.
 - Côté Windows, l'appli recopie aussi les 4 fichiers sur le NAS de Calvin s'il est présent (`Updater.MirrorToNasAsync`).
+- **KSHDESK** (widgets de bureau de Calvin, `Documents\KSHDESK`, hors de ce dépôt) : son menu « Mise à jour » (`build.cmd`) lance aussi `maj-kshplayer.ps1` en arrière-plan → si KSHPLAYER / KSHPLAYER PRO installé est plus ancien que `version.json` et qu'aucune vidéo n'est ouverte : téléchargement de l'installateur puis `/update` (attendre l'installateur avec `WaitForExit`, **pas** `Start-Process -Wait`, qui attendrait aussi l'aperçu Espace relancé). Journal `%LOCALAPPDATA%\KSHDESK\maj-kshplayer.log`. Testé sur `windows-latest` (branche `kshdesk-test`, 1.0.0 → 1.3.2).
 - **Pour publier une version** : augmenter `VERSION`, écrire `NOTES.txt` (une ligne), puis pousser sur `main`. Ça prend environ 6 min.
   - Si GitHub n'a pas de Mac libre (arrivé le 2026-11-04 : job « mac » annulé), Windows est publié quand même : les `.dmg` précédents restent en ligne et `version.json` omet les clés `mac`/`mac_pro`, donc les Mac ne voient pas de mise à jour. Republier plus tard (`gh run rerun` ou nouveau push) pour sortir les `.dmg`.
   - Pour un push qui ne doit rien publier, mettre `[skip ci]` dans le message de commit.
