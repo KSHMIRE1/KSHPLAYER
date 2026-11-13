@@ -2,6 +2,8 @@ name: Test KSHDESK maj KSHPLAYER
 on:
   push:
     branches: [kshdesk-test]
+permissions:
+  contents: write
 jobs:
   win:
     runs-on: windows-latest
@@ -19,9 +21,21 @@ jobs:
           New-Item -Force $k | Out-Null
           Set-ItemProperty $k DisplayVersion '1.0.0'
           "::notice::avant : $((Get-Item "$dst\KSHPLAYER.exe").VersionInfo.FileVersion)"
-      - name: Script de KSHDESK (Windows PowerShell 5.1, comme chez Calvin)
-        shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\kshdesk-test\maj-kshplayer.ps1
+      - name: Script de KSHDESK (Windows PowerShell 5.1, comme chez Calvin) + capture d'écran
+        shell: pwsh
+        run: |
+          $p = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','.github\kshdesk-test\maj-kshplayer.ps1' -PassThru
+          $ok = $p.WaitForExit(240000)
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          New-Item -ItemType Directory -Force caps | Out-Null
+          $bmp.Save("$PWD\caps\ecran.png")
+          $procs = (Get-Process | Where-Object { $_.ProcessName -like 'KSH*' -or $_.MainWindowTitle -ne '' } | ForEach-Object { "$($_.ProcessName) [$($_.MainWindowTitle)]" }) -join '%0A'
+          "::notice title=etat::script fini : $ok%0A$procs"
+          cd caps; git init -q -b test-captures; git add .; git -c user.name=CI -c user.email=ci@local commit -qm cap
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" test-captures
       - name: Résultat
         shell: pwsh
         run: |
