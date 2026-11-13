@@ -1,0 +1,11 @@
+{
+  "version": "1.3.2",
+  "date": "2026-11-13",
+  "notes": "Séries : « Épisode suivant » dès le générique de fin, même quand sa musique change (détecté à l'image) · sinon 45 s avant la fin",
+  "files": {
+    "windows": "KSHPLAYER-Setup.exe",
+    "windows_pro": "KSHPLAYER-PRO-Setup.exe",
+    "mac": "KSHPLAYER.dmg",
+    "mac_pro": "KSHPLAYER-PRO.dmg"
+  }
+}
